@@ -395,12 +395,23 @@ def _run_one(airfoil: str, alpha_deg: float, cfg: dict) -> bool:
 
 
 # ---------------------------------------------------------------------------
+# STL file helpers
+# ---------------------------------------------------------------------------
+
+def _find_stl_files(directory: Path) -> list[Path]:
+    """Return all files whose extension is .stl regardless of case."""
+    if not directory.exists():
+        return []
+    return sorted(p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".stl")
+
+
+# ---------------------------------------------------------------------------
 # Airfoil picker (from CUSTOM_STL_DIR)
 # ---------------------------------------------------------------------------
 
 def _choose_airfoil() -> str | None:
     CUSTOM_STL_DIR.mkdir(parents=True, exist_ok=True)
-    stl_files = sorted(CUSTOM_STL_DIR.glob("*.stl"))
+    stl_files = _find_stl_files(CUSTOM_STL_DIR)
     if not stl_files:
         _warn(f"No custom airfoils found in {CUSTOM_STL_DIR}")
         _info("Import an STL first (Option A).")
@@ -435,11 +446,10 @@ def task_import_stl():
     _info("Scanning for STL files …")
     found: list[Path] = []
     for scan_dir in STL_SCAN_DIRS:
-        if scan_dir.exists():
-            hits = sorted(scan_dir.glob("*.stl"))
-            if hits:
-                _info(f"  {scan_dir}  ({len(hits)} file(s))")
-            found.extend(hits)
+        hits = _find_stl_files(scan_dir)
+        if hits:
+            _info(f"  {scan_dir}  ({len(hits)} file(s))")
+        found.extend(hits)
 
     print()
     if found:
