@@ -408,6 +408,7 @@ geometry
     {{
         type triSurfaceMesh;
         name {patch};
+        scale   0.001;
     }}
 }}
 

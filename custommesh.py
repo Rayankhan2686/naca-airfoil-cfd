@@ -434,6 +434,69 @@ def _choose_airfoil() -> str | None:
 # ===========================================================================
 
 # ---------------------------------------------------------------------------
+# STL bounding box checker
+# ---------------------------------------------------------------------------
+
+def _check_stl_bounds(stl_path: Path):
+    """
+    Parse vertex coordinates from an ASCII STL and warn if chord or span are
+    outside acceptable ranges after the 0.001 mm-to-m scale is applied.
+    Expected: chord (X range) 0.9–1.1 m, span (Z range) 0.09–0.11 m.
+    """
+    try:
+        text = stl_path.read_text(errors="ignore")
+    except OSError:
+        return
+
+    if "vertex" not in text[:500].lower():
+        _warn("Binary STL detected — skipping bounding box check.")
+        _warn("Re-export as ASCII STL from SolidWorks to enable automatic dimension checking.")
+        return
+
+    xs, ys, zs = [], [], []
+    for m in re.finditer(
+        r"^\s*vertex\s+([\d.eE+\-]+)\s+([\d.eE+\-]+)\s+([\d.eE+\-]+)",
+        text, re.M,
+    ):
+        xs.append(float(m.group(1)))
+        ys.append(float(m.group(2)))
+        zs.append(float(m.group(3)))
+
+    if not xs:
+        _warn("No vertices found in STL file — skipping bounding box check.")
+        return
+
+    chord_m = (max(xs) - min(xs)) * 0.001
+    thick_m = (max(ys) - min(ys)) * 0.001
+    span_m  = (max(zs) - min(zs)) * 0.001
+
+    print()
+    _info("Bounding box after applying 0.001 scale (mm → m):")
+    _info(f"  Chord     (X range): {chord_m:.4f} m")
+    _info(f"  Thickness (Y range): {thick_m:.4f} m")
+    _info(f"  Span      (Z range): {span_m:.4f} m")
+
+    ok = True
+
+    if not (0.9 <= chord_m <= 1.1):
+        _warn(f"Chord = {chord_m:.4f} m is outside the expected range [0.9 m, 1.1 m].")
+        _warn("The solver uses chord = 1.0 m for Reynolds number, force coefficient")
+        _warn("normalisation, and all boundary conditions. Wrong chord = wrong Cl/Cd.")
+        _warn("Fix in SolidWorks: leading edge at origin, chord = 1000 mm in X.")
+        ok = False
+
+    if not (0.09 <= span_m <= 0.11):
+        _warn(f"Span = {span_m:.4f} m is outside the expected range [0.09 m, 0.11 m].")
+        _warn("Reference area Aref = chord x span = 1.0 x 0.1 = 0.1 m².")
+        _warn("Wrong span changes Aref and makes all force coefficients incorrect.")
+        _warn("Fix in SolidWorks: span = 100 mm in Z (Z from 0 to 100 mm).")
+        ok = False
+
+    if ok:
+        _success(f"Dimensions OK — chord = {chord_m:.4f} m, span = {span_m:.4f} m.")
+
+
+# ---------------------------------------------------------------------------
 # A — Import Custom STL from SolidWorks
 # ---------------------------------------------------------------------------
 
@@ -560,6 +623,10 @@ def task_import_stl():
         _warn("surfaceCheck timed out; skipping geometry check.")
     except Exception as exc:
         _warn(f"surfaceCheck unavailable ({exc}); skipping geometry check.")
+
+    # Bounding box dimension check (mm → m via 0.001 scale)
+    _info("Checking STL dimensions …")
+    _check_stl_bounds(dst_path)
 
     final_st = dst_path.stat()
     print()
