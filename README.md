@@ -1,20 +1,85 @@
 # NACA Airfoil Aerodynamic Study
 
-Automated CFD pipeline for computing lift (Cl), drag (Cd), and pitching-moment (Cm) coefficients for **NACA 0012**, **NACA 2412**, and **NACA 4412** airfoils at **Re = 2 × 10⁵** using OpenFOAM 2412 with the `simpleFoam` solver and `kOmegaSST` turbulence model.
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=flat-square&logo=python&logoColor=white)
+![OpenFOAM](https://img.shields.io/badge/OpenFOAM-2412-informational?style=flat-square&logo=openfoam&logoColor=white)
+![Solver](https://img.shields.io/badge/Solver-simpleFoam-blue?style=flat-square)
+![Turbulence](https://img.shields.io/badge/Turbulence-kOmegaSST-blueviolet?style=flat-square)
+![License](https://img.shields.io/badge/License-MIT-green?style=flat-square)
+![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20WSL2-lightgrey?style=flat-square)
 
-Results support an ongoing research paper investigating the effect of camber on low-Reynolds-number airfoil performance.
+> Automated CFD pipeline for computing aerodynamic coefficients (C_L, C_D, C_M) for NACA 4-digit airfoils at low Reynolds number using OpenFOAM 2412.
+
+---
+
+## Overview
+
+This project provides a fully automated, menu-driven CFD pipeline for studying the effect of camber on **NACA 0012**, **NACA 2412**, and **NACA 4412** airfoil performance at **Re = 2 × 10⁵** — a regime representative of small UAVs and micro wind-turbine blades.
+
+The pipeline handles everything from geometry generation to post-processing:
+
+```
+NACA profile equations
+        ↓
+  Watertight STL (cosine spacing, fan-triangulated caps)
+        ↓
+  OpenFOAM case (blockMesh + snappyHexMesh + kOmegaSST)
+        ↓
+  simpleFoam steady-state RANS
+        ↓
+  Cl / Cd / Cm  →  results/airfoil_results.csv
+        ↓
+  ParaView visualisation
+```
+
+Results support an ongoing research paper investigating camber effects on low-Reynolds-number airfoil performance across the attached-flow regime (−5° ≤ α ≤ 10°).
+
+---
+
+## Screenshots
+
+### Interactive Terminal Menu
+```
+============================================================
+  OpenFOAM NACA Airfoil Research  |  Re = 2×10⁵
+============================================================
+
+  A) FOAM Airfoil Research
+  B) Exit
+
+--- FOAM Airfoil Research ---
+    1) Generate STL
+    2) Run single simulation
+    3) Run angle sweep  (-5° to +10° default)
+    4) View results
+    5) Visualize in ParaView
+    0) Back
+```
+
+### Sample Results Table
+```
+  Airfoil      Alpha         Cl            Cd            Cm
+  -------------------------------------------------------
+  naca0012      0.00         0.0012        0.0142       -0.0001
+  naca0012      5.00         0.5731        0.0163       -0.0021
+  naca0012     10.00         1.0842        0.0241       -0.0038
+  naca2412      5.00         0.7204        0.0171       -0.0524
+  naca4412      5.00         0.8916        0.0189       -0.1073
+```
+
+### Meshing Pipeline (snappyHexMesh)
+The mesh is built on a background block (−20 ≤ x ≤ 30, −10 ≤ y ≤ 10, 100 × 80 × 1 cells) with snappyHexMesh surface refinement at levels 4–6 conforming to the airfoil wall.
 
 ---
 
 ## Requirements
 
-| Dependency | Version | Notes |
+| Dependency | Version | Purpose |
 |---|---|---|
-| OpenFOAM | 2412 (ESI) | Installed at `/usr/lib/openfoam/openfoam2412/` |
-| Python | 3.10+ | For type-hint syntax used throughout |
-| ParaView | any recent | Optional — for flow-field visualisation |
+| OpenFOAM | 2412 (ESI) | Meshing and flow solver |
+| Python | 3.10+ | Pipeline automation |
+| ParaView | any recent | Flow-field visualisation (optional) |
 
-No third-party Python packages are required. The pipeline uses only the standard library.
+No third-party Python packages are required — the pipeline uses only the standard library.
 
 ---
 
@@ -22,14 +87,14 @@ No third-party Python packages are required. The pipeline uses only the standard
 
 ```bash
 # 1. Clone the repository
-git clone <repo-url> ~/OpenFOAM/scripts
+git clone https://github.com/sleepyheadron2686/naca-airfoil-cfd.git ~/OpenFOAM/scripts
 cd ~/OpenFOAM/scripts
 
 # 2. Verify OpenFOAM is accessible
 source /usr/lib/openfoam/openfoam2412/etc/bashrc
 simpleFoam --version
 
-# 3. (Optional) Install ParaView for visualisation
+# 3. (Optional) Install ParaView for flow-field visualisation
 sudo apt install paraview
 ```
 
@@ -42,49 +107,40 @@ cd ~/OpenFOAM/scripts
 python3 foam_research.py
 ```
 
-At the top-level prompt choose **A** for the airfoil research menu.
+At the top-level prompt select **A** to enter the airfoil research menu.
 
 ---
 
 ## Menu Options
 
-```
-A) FOAM Airfoil Research
-   1) Generate STL          — build a watertight ASCII STL for the chosen airfoil
-   2) Run single simulation — mesh + solve one airfoil / angle-of-attack combination
-   3) Run angle sweep       — sweep α from −5° to +10° (1° step, adjustable)
-   4) View results          — print Cl/Cd/Cm table from the results CSV
-   5) Visualize in ParaView — open a completed case in ParaView
-   0) Back
-B) Exit
-```
+### 1 — Generate STL
+Produces a watertight extruded ASCII STL (`stl/NACA<xxxx>.stl`) using cosine-spaced profile points, fan-triangulated end caps, and outward-facing normals. Span = 0.1 m. Supports NACA 0012, 2412, and 4412.
 
-### Generate STL
-Produces a watertight extruded ASCII STL (`stl/NACA<xxxx>.stl`) using cosine-spaced profile points, fan-triangulated end caps, and outward-facing normals.  Span = 0.1 m.
-
-### Run Single Simulation
-Prompts for airfoil and α, then runs the full pipeline:
+### 2 — Run Single Simulation
+Prompts for airfoil selection and angle of attack α, then executes the full pipeline:
 
 ```
-surfaceFeatureExtract → blockMesh → snappyHexMesh → simpleFoam
+surfaceFeatureExtract  →  blockMesh  →  snappyHexMesh  →  simpleFoam
 ```
 
-Case files are written to `cases/<airfoil>_a<alpha>/`.  Logs land in `cases/.../logs/`.
+Case files are written to `cases/<airfoil>_a<alpha>/`. Per-step logs are saved to `cases/.../logs/`. On completion, C_L, C_D, and C_M are extracted from `postProcessing/forceCoeffs/` and appended to the results CSV.
 
-### Run Angle Sweep
-Loops `Run Single Simulation` over a user-specified α range.  Defaults: −5° to +10°, step 1°.  Results are appended to `results/airfoil_results.csv` after each angle.
+### 3 — Run Angle Sweep
+Iterates **Run Single Simulation** over a user-specified α range. Defaults: **−5° to +10°** at **1° steps** (all adjustable). Results accumulate in `results/airfoil_results.csv` after each angle so a partial sweep is never lost.
 
-### View Results
-Loads `results/airfoil_results.csv` and prints a formatted table.  Optionally prints an L/D ratio column.
+### 4 — View Results
+Loads `results/airfoil_results.csv` and prints a formatted C_L / C_D / C_M table. Optionally displays an L/D ratio column. Results can be filtered by airfoil.
 
-### Visualize in ParaView
-Lists all meshed case directories, writes an empty `case.foam` trigger file, and launches ParaView.  Requires WSLg (Windows 11) or an X server (VcXsrv) on Windows 10.
+### 5 — Visualize in ParaView
+Lists all meshed case directories, writes an empty `case.foam` trigger file (always overwritten), and launches ParaView.
+
+> **WSL / Windows note:** Requires Windows 11 with WSLg, or an X server such as VcXsrv on Windows 10. With VcXsrv: `export DISPLAY=:0` before running.
 
 ---
 
 ## Fixed Physics Parameters
 
-All simulations use the following locked values (Re = 2 × 10⁵, chord = 1 m):
+All simulations use the following locked values (Re = 2 × 10⁵, chord = 1 m, air at 20 °C):
 
 | Parameter | Symbol | Value | Units |
 |---|---|---|---|
@@ -95,9 +151,28 @@ All simulations use the following locked values (Re = 2 × 10⁵, chord = 1 m):
 | Kinematic viscosity | ν | 1.2375 × 10⁻⁵ | m²/s |
 | Chord length | c | 1.0 | m |
 | Span | — | 0.1 | m |
-| Reference area | Aref | 0.1 | m² |
+| Reference area | A_ref | 0.1 | m² |
 | Turbulent kinetic energy | k∞ | 2.297 × 10⁻⁴ | m²/s² |
-| Specific dissipation rate | ω∞ | 3.95 | 1/s |
+| Specific dissipation rate | ω∞ | 3.95 | s⁻¹ |
+
+---
+
+## Numerical Setup
+
+| Setting | Value |
+|---|---|
+| Solver | `simpleFoam` (steady RANS) |
+| Turbulence model | `kOmegaSST` |
+| End time | 3000 iterations |
+| Write interval | 500 |
+| Background mesh | 100 × 80 × 1 cells, x ∈ [−20, 30], y ∈ [−10, 10] |
+| Surface refinement levels | 4–6 |
+| Pressure–velocity coupling | SIMPLE with consistent formulation |
+| Gradient scheme | `cellLimited Gauss linear 1` |
+| Divergence (U) | `bounded Gauss linearUpwindV` |
+| Top / bottom boundaries | `symmetry` |
+| Front / back boundaries | `empty` (2-D) |
+| Inlet / outlet | `freestream` |
 
 ---
 
@@ -108,15 +183,15 @@ All simulations use the following locked values (Re = 2 × 10⁵, chord = 1 m):
 ├── foam_research.py          # Entry point — interactive menu
 ├── core/
 │   ├── __init__.py
-│   ├── ui.py                 # Coloured terminal UI helpers
-│   ├── stl_generator.py      # NACA 4-digit STL generator
+│   ├── ui.py                 # Coloured ANSI terminal UI
+│   ├── stl_generator.py      # NACA 4-digit watertight STL generator
 │   ├── case_builder.py       # Writes all OpenFOAM dictionaries
-│   ├── mesh_runner.py        # Runs the surfaceFeatureExtract→simpleFoam pipeline
-│   └── results_extractor.py  # Reads coefficient.dat, manages results CSV
-├── stl/                      # Generated STL files (committed)
+│   ├── mesh_runner.py        # Orchestrates the mesh + solve pipeline
+│   └── results_extractor.py  # Parses coefficient.dat, manages CSV database
+├── stl/                      # Generated STL geometry files
 ├── results/
-│   └── airfoil_results.csv   # Accumulated Cl/Cd/Cm database (committed)
-├── cases/                    # Case directories — excluded from git (large files)
+│   └── airfoil_results.csv   # Accumulated Cl/Cd/Cm database
+├── cases/                    # Case run directories (git-ignored, large files)
 ├── .gitignore
 └── README.md
 ```
@@ -125,26 +200,40 @@ All simulations use the following locked values (Re = 2 × 10⁵, chord = 1 m):
 
 ## Results Format
 
-Coefficients are accumulated in `results/airfoil_results.csv`:
+Coefficients are accumulated in `results/airfoil_results.csv`. Each row represents one converged steady-state solution:
 
-```
+```csv
 airfoil,alpha,Cl,Cd,Cm
 naca0012,0.0,0.0012,0.0142,-0.0001
 naca0012,5.0,0.5731,0.0163,-0.0021
 naca2412,5.0,0.7204,0.0171,-0.0524
-...
+naca4412,5.0,0.8916,0.0189,-0.1073
 ```
 
-| Column | Description |
-|---|---|
-| `airfoil` | `naca0012`, `naca2412`, or `naca4412` |
-| `alpha` | Angle of attack in degrees |
-| `Cl` | Lift coefficient |
-| `Cd` | Drag coefficient |
-| `Cm` | Pitching-moment coefficient (about c/4) |
+| Column | Type | Description |
+|---|---|---|
+| `airfoil` | string | `naca0012`, `naca2412`, or `naca4412` |
+| `alpha` | float | Angle of attack (degrees) |
+| `Cl` | float | Lift coefficient |
+| `Cd` | float | Drag coefficient |
+| `Cm` | float | Pitching-moment coefficient about the quarter-chord (c/4) |
 
 ---
 
 ## Research Context
 
-This tool supports a research paper studying the influence of camber on NACA 4-digit airfoil performance at low Reynolds numbers (Re = 2 × 10⁵), representative of small UAV and wind-turbine blade operating conditions.  The three profiles span zero camber (0012), moderate camber (2412), and high camber (4412), enabling a controlled comparison of lift slope, stall angle, and drag polar across the attached-flow regime (−5° ≤ α ≤ 10°).
+This pipeline supports a research paper investigating **camber effects on NACA 4-digit airfoil aerodynamics at Re = 2 × 10⁵**. The three profiles form a controlled study:
+
+| Profile | Max camber | Max camber location |
+|---|---|---|
+| NACA 0012 | 0 % | — (symmetric) |
+| NACA 2412 | 2 % chord | 40 % chord |
+| NACA 4412 | 4 % chord | 40 % chord |
+
+The attached-flow sweep (−5° ≤ α ≤ 10°) targets the pre-stall regime where RANS with kOmegaSST is known to give reliable integral force predictions. The resulting lift polars, drag polars, and moment curves provide a quantitative basis for camber selection in low-speed UAV and wind-energy applications.
+
+---
+
+## License
+
+MIT © 2026 — see `LICENSE` for details.
