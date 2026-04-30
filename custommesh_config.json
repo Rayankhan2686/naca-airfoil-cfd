@@ -1,0 +1,24 @@
+{
+  "current": {
+    "nx": 100,
+    "ny": 80,
+    "nz": 1,
+    "inlet": 20,
+    "outlet": 30,
+    "top_bottom": 10,
+    "refine_min": 0,
+    "refine_max": 0,
+    "end_time": 3000
+  },
+  "last_known_good": {
+    "nx": 100,
+    "ny": 80,
+    "nz": 1,
+    "inlet": 20,
+    "outlet": 30,
+    "top_bottom": 10,
+    "refine_min": 0,
+    "refine_max": 0,
+    "end_time": 3000
+  }
+}
