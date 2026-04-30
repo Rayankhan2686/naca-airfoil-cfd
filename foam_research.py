@@ -7,8 +7,10 @@ Mode B: Custom Mesh Mode — import any SolidWorks STL and run CFD
 Mode C: Exit
 """
 
+import csv
 import datetime
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -33,6 +35,7 @@ CASES_DIR           = SCRIPTS_DIR / "cases"
 STL_DIR             = SCRIPTS_DIR / "stl"
 RESULTS_CSV         = SCRIPTS_DIR / "results" / "airfoil_results.csv"
 CUSTOM_AIRFOILS_DIR = Path.home() / "OpenFOAM" / "airfoils"
+MESH_STATS_DIR      = Path.home() / "OpenFOAM" / "results"
 
 # Directories scanned automatically when importing a SolidWorks STL
 _STL_SCAN_DIRS = [
@@ -209,6 +212,215 @@ def task_view_results():
         ui.print_table(["airfoil", "alpha", "Cl", "Cd", "L/D", "Cm"], table_rows, col_width=14)
 
 
+# ===========================================================================
+# Option 6 — Mesh Statistics  (Research Mode)
+# ===========================================================================
+
+_NACA_AIRFOILS = [
+    ("naca0012", "NACA 0012"),
+    ("naca2412", "NACA 2412"),
+    ("naca4412", "NACA 4412"),
+]
+
+# Regex fragment that matches a floating-point / scientific number
+_NUM_RE = r"([\d]+\.[\d]+(?:[eE][+\-]?\d+)?)"
+
+
+def _case_to_alpha(case_name: str) -> float | None:
+    """
+    Decode the angle of attack from a case directory name.
+    Format: {airfoil}_a{p|m}{integer}_{decimal}
+      naca0012_ap1_0  →  +1.0
+      naca0012_am2_0  →  -2.0
+      naca0012_ap8_5  →  +8.5
+    """
+    m = re.search(r"_a([pm])(\d+)_(\d+)$", case_name)
+    if not m:
+        return None
+    sign = -1.0 if m.group(1) == "m" else 1.0
+    return sign * float(f"{m.group(2)}.{m.group(3)}")
+
+
+def _find_mesh_cases(af_key: str) -> list[tuple[float, Path]]:
+    """Return sorted (alpha, path) pairs for all completed cases of *af_key*."""
+    prefix = af_key + "_a"
+    found: list[tuple[float, Path]] = []
+    for root in _CASE_ROOTS:
+        if not root.exists():
+            continue
+        for d in sorted(root.iterdir()):
+            if not d.is_dir() or not d.name.startswith(prefix):
+                continue
+            if not (d / "constant" / "polyMesh").exists():
+                continue
+            alpha = _case_to_alpha(d.name)
+            if alpha is not None:
+                found.append((alpha, d))
+    found.sort(key=lambda x: x[0])
+    return found
+
+
+def _parse_checkmesh(output: str, alpha: float) -> dict | None:
+    """Extract mesh metrics from checkMesh stdout. Returns None if cells missing."""
+    mc  = re.search(r"^\s+cells:\s+(\d+)",   output, re.M)
+    mf  = re.search(r"^\s+faces:\s+(\d+)",   output, re.M)
+    mp  = re.search(r"^\s+points:\s+(\d+)",  output, re.M)
+    no  = re.search(r"Mesh non-orthogonality Max:\s*" + _NUM_RE, output)
+    sk  = re.search(r"Max skewness\s*=\s*"   + _NUM_RE, output)
+    mv  = re.search(r"Min volume\s*=\s*"     + _NUM_RE, output)
+    asp = re.search(r"Max aspect ratio\s*=\s*" + _NUM_RE, output)
+
+    if re.search(r"Mesh OK\.", output):
+        quality = "PASS"
+    else:
+        fm = re.search(r"Failed\s+(\d+)\s+mesh check", output)
+        quality = f"FAIL ({fm.group(1)})" if fm else "UNKNOWN"
+
+    if not mc:
+        return None
+
+    return {
+        "alpha":        alpha,
+        "cells":        int(mc.group(1)),
+        "faces":        int(mf.group(1))  if mf  else None,
+        "points":       int(mp.group(1))  if mp  else None,
+        "max_nonortho": float(no.group(1))  if no  else None,
+        "max_skewness": float(sk.group(1))  if sk  else None,
+        "min_volume":   float(mv.group(1))  if mv  else None,
+        "max_aspect":   float(asp.group(1)) if asp else None,
+        "quality":      quality,
+    }
+
+
+def _run_checkmesh_on_case(alpha: float, case_path: Path) -> dict | None:
+    """Run (or re-use cached) checkMesh for one case and return parsed stats."""
+    log_path = case_path / "logs" / "checkMesh.log"
+
+    if log_path.exists():
+        ui.info(f"  Using cached log: {log_path.relative_to(CASES_DIR.parent)}")
+        output = log_path.read_text()
+    else:
+        ui.info(f"  Running checkMesh for {case_path.name} …")
+        cmd = f'source "{FOAM_BASHRC}" && checkMesh -latestTime 2>&1'
+        try:
+            res = subprocess.run(
+                ["bash", "-c", cmd],
+                cwd=str(case_path),
+                capture_output=True, text=True, timeout=120,
+            )
+            output = res.stdout
+            if output.strip():
+                log_path.parent.mkdir(parents=True, exist_ok=True)
+                log_path.write_text(output)
+        except subprocess.TimeoutExpired:
+            ui.error(f"  checkMesh timed out for {case_path.name}")
+            return None
+        except Exception as exc:
+            ui.error(f"  checkMesh error: {exc}")
+            return None
+
+    return _parse_checkmesh(output, alpha)
+
+
+def _print_mesh_stats_table(rows: list[dict]):
+    """Print a formatted, colour-coded mesh statistics table."""
+    cols   = ["Alpha",  "Cells", "Faces",  "Points", "NonOrtho", "Skewness", "MinVol",    "Aspect"]
+    widths = [8,        8,       8,        8,        10,         10,         12,          10]
+
+    def _fmt(r: dict) -> tuple:
+        return (
+            f"{r['alpha']:+.1f}°",
+            str(r["cells"])   if r["cells"]   is not None else "N/A",
+            str(r["faces"])   if r["faces"]   is not None else "N/A",
+            str(r["points"])  if r["points"]  is not None else "N/A",
+            f"{r['max_nonortho']:.2f}"   if r["max_nonortho"] is not None else "N/A",
+            f"{r['max_skewness']:.4f}"   if r["max_skewness"] is not None else "N/A",
+            f"{r['min_volume']:.2e}"     if r["min_volume"]   is not None else "N/A",
+            f"{r['max_aspect']:.2f}"     if r["max_aspect"]   is not None else "N/A",
+        )
+
+    hdr = "  " + "  ".join(f"{h:<{w}}" for h, w in zip(cols, widths)) + "  Quality"
+    sep = "  " + "-" * (len(hdr) - 2 + 14)
+    print(f"\n{ui._c(ui._B + ui._C, hdr)}")
+    print(sep)
+
+    for r in rows:
+        body = "  " + "  ".join(f"{v:<{w}}" for v, w in zip(_fmt(r), widths))
+        q = r.get("quality", "UNKNOWN")
+        qcol = ui._G if q == "PASS" else (ui._R if "FAIL" in q else ui._Y)
+        print(body + "  " + ui._c(qcol, q))
+    print()
+
+
+def _save_mesh_stats_csv(csv_path: Path, rows: list[dict]):
+    fields = ["alpha", "cells", "faces", "points",
+              "max_nonortho", "max_skewness", "min_volume", "max_aspect", "quality"]
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields, extrasaction="ignore")
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+def task_mesh_stats():
+    ui.section("Mesh Statistics by Airfoil and Angle")
+
+    # 1. Select airfoil
+    for i, (_, name) in enumerate(_NACA_AIRFOILS, 1):
+        print(f"    {i}) {name}")
+    while True:
+        raw = input(f"  {ui._c(ui._C, 'Select airfoil [1-3]')}: ").strip()
+        if raw in ("1", "2", "3"):
+            af_key, af_display = _NACA_AIRFOILS[int(raw) - 1]
+            break
+        ui.warn("Enter 1, 2, or 3.")
+
+    # 2. Find completed cases
+    cases = _find_mesh_cases(af_key)
+    if not cases:
+        ui.warn(f"No completed cases found for {af_display}.")
+        ui.info(f"Cases are searched in: {' and '.join(str(r) for r in _CASE_ROOTS)}")
+        return
+
+    # 3. Let user pick one angle or ALL
+    print()
+    ui.info(f"{len(cases)} completed case(s) for {af_display}:")
+    for i, (alpha, path) in enumerate(cases, 1):
+        print(f"    {i}) α = {alpha:+.1f}°   [{path.name}]")
+    print(f"    0) ALL angles — single summary table")
+    print()
+
+    while True:
+        raw = input(f"  {ui._c(ui._C, f'Select [0-{len(cases)}]')}: ").strip()
+        if raw.isdigit() and 0 <= int(raw) <= len(cases):
+            break
+        ui.warn(f"Enter a number between 0 and {len(cases)}.")
+
+    selected = cases if int(raw) == 0 else [cases[int(raw) - 1]]
+
+    # 4. Run checkMesh on each selected case
+    print()
+    stats: list[dict] = []
+    for alpha, case_path in selected:
+        row = _run_checkmesh_on_case(alpha, case_path)
+        if row:
+            stats.append(row)
+        else:
+            ui.warn(f"  Skipping {case_path.name} — could not extract stats.")
+
+    if not stats:
+        ui.error("No mesh statistics could be extracted.")
+        return
+
+    # 5. Print table
+    _print_mesh_stats_table(stats)
+
+    # 6. Save CSV
+    csv_path = MESH_STATS_DIR / f"{af_key.upper()}_mesh_stats.csv"
+    _save_mesh_stats_csv(csv_path, stats)
+    ui.success(f"Saved mesh stats CSV → {csv_path}")
+
+
 # ---------------------------------------------------------------------------
 # ParaView visualisation (shared by both modes)
 # ---------------------------------------------------------------------------
@@ -278,6 +490,7 @@ def menu_foam_research():
         print("    3) Run angle sweep  (29 angles: -4° to 20°, 0.5° steps at 8°–12°)")
         print("    4) View results")
         print("    5) Visualize in ParaView")
+        print("    6) View Mesh Statistics by Airfoil and Angle")
         print("    0) Back")
 
         choice = input(f"  {ui._c(ui._C, 'Select')}: ").strip()
@@ -291,6 +504,8 @@ def menu_foam_research():
             task_view_results()
         elif choice == "5":
             task_visualize_paraview()
+        elif choice == "6":
+            task_mesh_stats()
         elif choice == "0":
             break
         else:
