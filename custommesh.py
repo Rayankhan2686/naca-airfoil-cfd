@@ -13,6 +13,7 @@ import csv
 import datetime
 import json
 import math
+import re
 import shutil
 import subprocess
 import sys
@@ -42,6 +43,11 @@ STL_SCAN_DIRS = [
     Path("/mnt/c/Users/khanr/Documents"),
     Path.home() / "OpenFOAM" / "airfoils",
 ]
+
+_NACA_KEYS        = {"naca0012", "naca2412", "naca4412"}
+_NACA_DISPLAY_MAP = {"naca0012": "NACA 0012", "naca2412": "NACA 2412", "naca4412": "NACA 4412"}
+_CASE_SCAN_ROOTS  = [CASES_DIR, Path.home() / "OpenFOAM" / "run"]
+_NUM_RE_CM        = r"([\d]+\.[\d]+(?:[eE][+\-]?\d+)?)"
 
 _SOLIDWORKS_TIPS = (
     "  SolidWorks STL Export Settings:\n"
@@ -751,6 +757,264 @@ def task_visualize_paraview():
 
 
 # ---------------------------------------------------------------------------
+# Mesh statistics helpers
+# ---------------------------------------------------------------------------
+
+def _extract_airfoil_key(case_name: str) -> str | None:
+    m = re.match(r'^(.+)_a[pm]\d+_\d+$', case_name)
+    return m.group(1) if m else None
+
+
+def _case_to_alpha_cm(case_name: str) -> float | None:
+    m = re.search(r"_a([pm])(\d+)_(\d+)$", case_name)
+    if not m:
+        return None
+    sign = -1.0 if m.group(1) == "m" else 1.0
+    return sign * float(f"{m.group(2)}.{m.group(3)}")
+
+
+def _discover_all_airfoils() -> tuple[list[str], list[str]]:
+    naca_set:   set[str] = set()
+    custom_set: set[str] = set()
+    for root in _CASE_SCAN_ROOTS:
+        if not root.exists():
+            continue
+        for d in root.iterdir():
+            if not d.is_dir():
+                continue
+            if not (d / "constant" / "polyMesh").exists():
+                continue
+            key = _extract_airfoil_key(d.name)
+            if key is None:
+                continue
+            if key in _NACA_KEYS:
+                naca_set.add(key)
+            else:
+                custom_set.add(key)
+    return sorted(naca_set), sorted(custom_set)
+
+
+def _find_cases_for_airfoil(af_key: str) -> list[tuple[float, Path]]:
+    results = []
+    for root in _CASE_SCAN_ROOTS:
+        if not root.exists():
+            continue
+        for d in root.iterdir():
+            if not d.is_dir():
+                continue
+            if not (d / "constant" / "polyMesh").exists():
+                continue
+            if _extract_airfoil_key(d.name) != af_key:
+                continue
+            alpha = _case_to_alpha_cm(d.name)
+            if alpha is None:
+                continue
+            results.append((alpha, d))
+    results.sort(key=lambda x: x[0])
+    return results
+
+
+def _parse_checkmesh_cm(output: str, alpha: float) -> dict | None:
+    def _find_int(pattern: str) -> str:
+        m = re.search(pattern, output, re.M)
+        return m.group(1) if m else "N/A"
+
+    def _find_float(pattern: str) -> str:
+        m = re.search(pattern, output, re.I)
+        return m.group(1) if m else "N/A"
+
+    cells   = _find_int(r'^\s*cells:\s*(\d+)')
+    faces   = _find_int(r'^\s*faces:\s*(\d+)')
+    points  = _find_int(r'^\s*points:\s*(\d+)')
+
+    nonortho = _find_float(
+        r'[Mm]ax(?:imum)?\s+non-orthogonality\s*[=:]\s*' + _NUM_RE_CM)
+    skewness = _find_float(
+        r'[Mm]ax(?:imum)?\s+skewness\s*[=:]\s*' + _NUM_RE_CM)
+    min_vol  = _find_float(
+        r'[Mm]in(?:imum)?\s+(?:cell\s+)?volume\s*[=:]\s*' + _NUM_RE_CM)
+    max_asp  = _find_float(
+        r'[Mm]ax(?:imum)?\s+(?:cell\s+)?aspect\s+ratio\s*[=:]\s*' + _NUM_RE_CM)
+
+    qual_m  = re.search(r'(PASS|FAIL\s*\(\d+\))', output, re.I)
+    quality = qual_m.group(1).strip() if qual_m else "N/A"
+
+    return {
+        "alpha":        alpha,
+        "cells":        cells,
+        "faces":        faces,
+        "points":       points,
+        "max_nonortho": nonortho,
+        "max_skewness": skewness,
+        "min_volume":   min_vol,
+        "max_aspect":   max_asp,
+        "quality":      quality,
+    }
+
+
+def _run_checkmesh_cm(alpha: float, case_path: Path) -> dict | None:
+    log_dir  = case_path / "logs"
+    log_path = log_dir / "checkMesh.log"
+    if log_path.exists():
+        return _parse_checkmesh_cm(log_path.read_text(), alpha)
+    log_dir.mkdir(parents=True, exist_ok=True)
+    cmd = (
+        f'set -o pipefail && source "{FOAM_BASHRC}" && '
+        f'checkMesh -latestTime 2>&1 | tee "{log_path}"'
+    )
+    try:
+        subprocess.run(["bash", "-c", cmd], cwd=str(case_path.resolve()), timeout=300)
+    except subprocess.TimeoutExpired:
+        _warn(f"checkMesh timed out for {case_path.name}")
+        return None
+    except Exception as exc:
+        _warn(f"checkMesh error for {case_path.name}: {exc}")
+        return None
+    if not log_path.exists():
+        return None
+    return _parse_checkmesh_cm(log_path.read_text(), alpha)
+
+
+def _print_mesh_stats_table_cm(rows: list[dict]):
+    header = (
+        f"  {'Alpha':>7}  {'Cells':>9}  {'Faces':>10}  {'Points':>10}  "
+        f"{'NonOrtho':>12}  {'Skewness':>10}  {'MinVol':>14}  {'Aspect':>9}  Quality"
+    )
+    sep = "  " + "-" * (len(header) - 2)
+    print(f"\n{_c(_B + _C, header)}")
+    print(sep)
+    for r in rows:
+        try:
+            no_val = float(r["max_nonortho"])
+            no_flag = "OK" if no_val <= 70.0 else "!!"
+            nonortho_str = f"{no_val:.1f} {no_flag}"
+        except (ValueError, TypeError):
+            nonortho_str = str(r["max_nonortho"])
+
+        body = (
+            f"  {r['alpha']:>7.2f}  {str(r['cells']):>9}  {str(r['faces']):>10}  "
+            f"{str(r['points']):>10}  {nonortho_str:>12}  {str(r['max_skewness']):>10}  "
+            f"{str(r['min_volume']):>14}  {str(r['max_aspect']):>9}  "
+        )
+        q = str(r["quality"])
+        if q.upper().startswith("PASS"):
+            quality_str = _c(_G, q)
+        elif q.upper().startswith("FAIL"):
+            quality_str = _c(_R, q)
+        else:
+            quality_str = q
+        print(body + quality_str)
+    print()
+
+
+def _save_mesh_stats_csv_cm(csv_path: Path, rows: list[dict]):
+    csv_path.parent.mkdir(parents=True, exist_ok=True)
+    fields = ["alpha", "cells", "faces", "points",
+              "max_nonortho", "max_skewness", "min_volume", "max_aspect", "quality"]
+    with open(csv_path, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fields)
+        writer.writeheader()
+        writer.writerows(rows)
+
+
+_MESH_LEGEND = """\
+  What these metrics mean:
+  NonOrtho  — angle (degrees) between the cell-centre-to-face vector and the face normal.
+              Keep below 70°. Values above 70° are marked !! and cause solver instability.
+  Skewness  — face distortion relative to an ideal face. Below 4 is acceptable for simpleFoam.
+  MinVol    — smallest cell volume in the mesh. Must be positive; negative means inverted cells.
+  Aspect    — longest-to-shortest edge ratio. Below 100 near the wall is acceptable.
+  Quality   — PASS = all mesh checks within OpenFOAM thresholds. FAIL(N) = N checks failed.
+"""
+
+
+# ---------------------------------------------------------------------------
+# H — View Mesh Statistics
+# ---------------------------------------------------------------------------
+
+def task_mesh_stats():
+    _section("View Mesh Statistics")
+    naca_keys, custom_keys = _discover_all_airfoils()
+
+    if not naca_keys and not custom_keys:
+        _warn("No completed cases found.")
+        _info(f"Scan roots: {[str(r) for r in _CASE_SCAN_ROOTS]}")
+        return
+
+    entries: list[tuple[str, str]] = []
+    print()
+    idx = 1
+    if naca_keys:
+        print(f"  {_c(_B, 'Research Airfoils (NACA)')}")
+        for key in naca_keys:
+            label = _NACA_DISPLAY_MAP.get(key, key.upper())
+            print(f"    {idx}) {label}")
+            entries.append((key, "naca"))
+            idx += 1
+    if custom_keys:
+        print(f"  {_c(_B, 'Custom Airfoils')}")
+        for key in custom_keys:
+            print(f"    {idx}) {key.upper()}")
+            entries.append((key, "custom"))
+            idx += 1
+
+    print()
+    while True:
+        raw = input(f"  {_c(_C, f'Select airfoil [1-{len(entries)}]')}: ").strip()
+        if raw.isdigit() and 1 <= int(raw) <= len(entries):
+            af_key, category = entries[int(raw) - 1]
+            break
+        _warn(f"Enter 1–{len(entries)}.")
+
+    cases = _find_cases_for_airfoil(af_key)
+    if not cases:
+        _warn(f"No completed cases found for '{af_key}'.")
+        return
+
+    _section(f"Select Angle — {af_key.upper()}")
+    for i, (alpha, case_path) in enumerate(cases, 1):
+        print(f"    {i}) α = {alpha:+.2f}°  ({case_path.name})")
+    print(f"    0) ALL angles")
+
+    while True:
+        raw = input(f"  {_c(_C, f'Choice [0-{len(cases)}]')}: ").strip()
+        if raw == "0":
+            selected = cases
+            break
+        if raw.isdigit() and 1 <= int(raw) <= len(cases):
+            selected = [cases[int(raw) - 1]]
+            break
+        _warn(f"Enter 0–{len(cases)}.")
+
+    _section("Running checkMesh")
+    rows = []
+    for alpha, case_path in selected:
+        _info(f"α = {alpha:+.2f}°  ({case_path.name})")
+        row = _run_checkmesh_cm(alpha, case_path)
+        if row is not None:
+            rows.append(row)
+        else:
+            _warn(f"Could not get mesh stats for {case_path.name}")
+
+    if not rows:
+        _warn("No mesh statistics could be extracted.")
+        return
+
+    display_name = _NACA_DISPLAY_MAP.get(af_key, af_key.upper())
+    _section(f"Mesh Statistics — {display_name}")
+    _print_mesh_stats_table_cm(rows)
+    print(_MESH_LEGEND)
+
+    if category == "naca":
+        csv_path = Path.home() / "OpenFOAM" / "results" / f"{af_key}_mesh_stats.csv"
+    else:
+        csv_path = Path.home() / "OpenFOAM" / "results" / "custom" / f"{af_key}_mesh_stats.csv"
+
+    _save_mesh_stats_csv_cm(csv_path, rows)
+    _success(f"Mesh stats saved to: {csv_path}")
+
+
+# ---------------------------------------------------------------------------
 # G — Reset all settings to default
 # ---------------------------------------------------------------------------
 
@@ -775,14 +1039,15 @@ def task_reset_defaults():
 # ===========================================================================
 
 _MENU = {
-    "A": ("Import Custom STL from SolidWorks",       task_import_stl),
-    "B": ("Custom Mesh Settings",                    task_mesh_settings),
+    "A": ("Import Custom STL from SolidWorks",          task_import_stl),
+    "B": ("Custom Mesh Settings",                       task_mesh_settings),
     "C": ("Run Single Simulation with custom settings", task_run_single),
-    "D": ("Run Angle Sweep with custom settings",    task_run_sweep),
-    "E": ("View Results",                            task_view_results),
-    "F": ("Visualize in ParaView",                   task_visualize_paraview),
-    "G": ("Reset all settings to default",           task_reset_defaults),
-    "H": ("Exit",                                    None),
+    "D": ("Run Angle Sweep with custom settings",       task_run_sweep),
+    "E": ("View Results",                               task_view_results),
+    "F": ("Visualize in ParaView",                      task_visualize_paraview),
+    "G": ("Reset all settings to default",              task_reset_defaults),
+    "H": ("View Mesh Statistics",                       task_mesh_stats),
+    "I": ("Exit",                                       None),
 }
 
 
@@ -794,14 +1059,14 @@ def main():
         for key, (label, _) in _MENU.items():
             print(f"  {_c(_Y, key)}) {label}")
         choice = input(f"\n  {_c(_C, 'Select')}: ").strip().upper()
-        if choice == "H":
+        if choice == "I":
             _info("Goodbye.")
             break
         if choice in _MENU:
             _, fn = _MENU[choice]
             fn()
         else:
-            _warn("Enter A–H.")
+            _warn("Enter A–I.")
 
 
 if __name__ == "__main__":
