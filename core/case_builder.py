@@ -1,17 +1,21 @@
 """
 Writes a complete OpenFOAM simpleFoam / kOmegaSST case directory
-for NACA airfoil simulations at Re=2e5.
+for any airfoil geometry at Re=2e5, chord=1 m.
+
+The `airfoil` argument may be any identifier (e.g. 'naca0012', 'my_wing',
+'delta_v2').  It is used as the OpenFOAM patch name and as the STL file
+basename (upper-cased, e.g. MY_WING.stl).  No NACA-specific logic is applied.
 
 Locked physics (Re=2e5, chord=1 m):
-  V       = 2.4751 m/s
-  rho     = 1.225  kg/m3
-  mu      = 1.516e-5 Pa.s
-  nu      = 1.2375e-5 m2/s
-  k_inf   = 2.297e-4 m2/s2
+  V         = 2.4751 m/s
+  rho       = 1.225  kg/m3
+  mu        = 1.516e-5 Pa.s
+  nu        = 1.2375e-5 m2/s
+  k_inf     = 2.297e-4 m2/s2
   omega_inf = 3.95 1/s
-  chord   = 1.0 m
-  span    = 0.1 m
-  Aref    = 0.1 m2
+  chord     = 1.0 m
+  span      = 0.1 m
+  Aref      = 0.1 m2
 """
 
 import math
