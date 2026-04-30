@@ -1,0 +1,15 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Claude
+.claude/
+
+# OpenFOAM case directories (large mesh/field files)
+cases/
+../run/
+
+# Keep results CSV files
+!results/
+!results/*.csv
