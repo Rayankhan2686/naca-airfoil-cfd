@@ -325,19 +325,19 @@ scale   1;
 
 vertices
 (
-    (-20 -10  0   )   // 0
-    ( 30 -10  0   )   // 1
-    ( 30  10  0   )   // 2
-    (-20  10  0   )   // 3
-    (-20 -10  0.1 )   // 4
-    ( 30 -10  0.1 )   // 5
-    ( 30  10  0.1 )   // 6
-    (-20  10  0.1 )   // 7
+    (-20 -20  0   )   // 0
+    ( 40 -20  0   )   // 1
+    ( 40  20  0   )   // 2
+    (-20  20  0   )   // 3
+    (-20 -20  0.1 )   // 4
+    ( 40 -20  0.1 )   // 5
+    ( 40  20  0.1 )   // 6
+    (-20  20  0.1 )   // 7
 );
 
 blocks
 (
-    hex (0 1 2 3 4 5 6 7) (100 80 1) simpleGrading (1 1 1)
+    hex (0 1 2 3 4 5 6 7) (120 100 1) simpleGrading (1 1 1)
 );
 
 boundary
@@ -365,12 +365,12 @@ boundary
     front
     {{
         type empty;
-        faces ( (4 5 6 7) );
+        faces ( (0 3 2 1) );
     }}
     back
     {{
         type empty;
-        faces ( (0 3 2 1) );
+        faces ( (4 5 6 7) );
     }}
 );
 """
@@ -563,8 +563,8 @@ functions
         patches         ({airfoil_patch});
         rho             rhoInf;
         rhoInf          1.225;
-        liftDir         (0 1 0);
-        dragDir         (1 0 0);
+        liftDir         ({lx:.6f} {ly:.6f} 0);
+        dragDir         ({dx:.6f} {dy:.6f} 0);
         CofR            (0.25 0 0.05);
         pitchAxis       (0 0 1);
         magUInf         {V};
@@ -671,7 +671,7 @@ solvers
 
 SIMPLE
 {
-    nNonOrthogonalCorrectors 0;
+    nNonOrthogonalCorrectors 2;
     consistent      yes;
 }
 
