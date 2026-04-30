@@ -7,6 +7,7 @@ Mode B: Custom Mesh Mode — import any SolidWorks STL and run CFD
 Mode C: Exit
 """
 
+import datetime
 import os
 import shutil
 import subprocess
@@ -32,6 +33,22 @@ CASES_DIR           = SCRIPTS_DIR / "cases"
 STL_DIR             = SCRIPTS_DIR / "stl"
 RESULTS_CSV         = SCRIPTS_DIR / "results" / "airfoil_results.csv"
 CUSTOM_AIRFOILS_DIR = Path.home() / "OpenFOAM" / "airfoils"
+
+# Directories scanned automatically when importing a SolidWorks STL
+_STL_SCAN_DIRS = [
+    Path("/mnt/c/Users/khanr/Downloads"),
+    Path("/mnt/c/Users/khanr/Desktop"),
+    Path("/mnt/c/Users/khanr/Documents"),
+    CUSTOM_AIRFOILS_DIR,
+]
+
+
+def _fmt_size(n_bytes: int) -> str:
+    for unit in ("B", "KB", "MB", "GB"):
+        if n_bytes < 1024.0:
+            return f"{n_bytes:.1f} {unit}"
+        n_bytes /= 1024.0
+    return f"{n_bytes:.1f} GB"
 
 
 # ---------------------------------------------------------------------------
@@ -305,16 +322,70 @@ def task_import_stl():
     print()
     print(_SOLIDWORKS_TIPS)
 
-    raw_path = input(f"  {ui._c(ui._C, 'STL file path')}: ").strip()
-    if not raw_path:
-        ui.warn("No path entered.")
-        return
-    src_path = Path(raw_path).expanduser().resolve()
-    if not src_path.exists():
-        ui.error(f"File not found: {src_path}")
-        return
+    # ---- Auto-scan for STL files -----------------------------------------
+    ui.info("Scanning for STL files …")
+    found: list[Path] = []
+    for scan_dir in _STL_SCAN_DIRS:
+        if scan_dir.exists():
+            hits = sorted(scan_dir.glob("*.stl"))
+            if hits:
+                ui.info(f"  {scan_dir}  ({len(hits)} file(s))")
+            found.extend(hits)
 
-    name = input(f"  {ui._c(ui._C, 'Airfoil name (e.g. my_wing, delta_v2)')}: ").strip()
+    print()
+    if found:
+        name_w = max(len(p.name) for p in found)
+        name_w = max(name_w, 24)
+        hdr = f"  {'#':<4}  {'File':<{name_w}}  {'Size':>9}  Location"
+        print(hdr)
+        print("  " + "-" * (len(hdr) - 2))
+        for i, stl in enumerate(found, 1):
+            stat    = stl.stat()
+            sz      = _fmt_size(stat.st_size)
+            loc     = str(stl.parent)
+            print(f"  {i:<4}  {stl.name:<{name_w}}  {sz:>9}  {loc}")
+        print()
+        manual_idx = len(found) + 1
+        print(f"  {manual_idx})  Enter path manually")
+    else:
+        ui.warn("No STL files found in the default scan locations.")
+        manual_idx = 1
+        print(f"  1)  Enter path manually")
+
+    print()
+
+    # ---- User selects a file ---------------------------------------------
+    while True:
+        raw = input(f"  {ui._c(ui._C, f'Choice [1-{manual_idx}]')}: ").strip()
+        if raw.isdigit() and 1 <= int(raw) <= manual_idx:
+            break
+        ui.warn(f"Enter a number between 1 and {manual_idx}.")
+
+    choice = int(raw)
+    if choice <= len(found):
+        src_path = found[choice - 1]
+    else:
+        raw_path = input(f"  {ui._c(ui._C, 'Full path to STL file')}: ").strip()
+        if not raw_path:
+            ui.warn("No path entered.")
+            return
+        src_path = Path(raw_path).expanduser().resolve()
+        if not src_path.exists():
+            ui.error(f"File not found: {src_path}")
+            return
+
+    # ---- Confirm file details --------------------------------------------
+    stat  = src_path.stat()
+    mtime = datetime.datetime.fromtimestamp(stat.st_mtime).strftime("%Y-%m-%d  %H:%M")
+    print()
+    print(f"  File     : {src_path.name}")
+    print(f"  Full path: {src_path}")
+    print(f"  Size     : {_fmt_size(stat.st_size)}")
+    print(f"  Modified : {mtime}")
+    print()
+
+    # ---- Airfoil name ----------------------------------------------------
+    name = input(f"  {ui._c(ui._C, 'Airfoil name (e.g. NACA6412, CUSTOM01)')}: ").strip()
     if not name:
         ui.error("Airfoil name cannot be empty.")
         return
@@ -361,10 +432,10 @@ def task_import_stl():
             "non-closed", "not closed", "hole",
             "multiply connected",
         )
-        found = [kw for kw in bad_kws if kw in output]
-        if found:
+        issues = [kw for kw in bad_kws if kw in output]
+        if issues:
             ui.warn("surfaceCheck detected potential geometry issues:")
-            for kw in found:
+            for kw in issues:
                 ui.warn(f"    '{kw}' found in surfaceCheck output")
             ui.warn("Meshing may fail. Repair the geometry in SolidWorks:")
             ui.warn("  – Ensure the body is a fully closed solid (no open edges or holes).")
@@ -376,8 +447,13 @@ def task_import_stl():
     except Exception as exc:
         ui.warn(f"surfaceCheck unavailable ({exc}); skipping geometry check.")
 
-    ui.success(f"Custom airfoil '{name}' saved as: {dst_path}")
-    ui.info(f"Use options 2 or 3 in the Custom Mesh menu to run simulations.")
+    # ---- Final confirmation -----------------------------------------------
+    final_stat = dst_path.stat()
+    print()
+    ui.success(f"'{name_upper}' is now available for simulation.")
+    ui.info(f"  Saved to : {dst_path}")
+    ui.info(f"  Size     : {_fmt_size(final_stat.st_size)}")
+    ui.info("Use Option 2 or 3 in the Custom Mesh menu to run simulations.")
 
 
 def _choose_custom_airfoil() -> str | None:
