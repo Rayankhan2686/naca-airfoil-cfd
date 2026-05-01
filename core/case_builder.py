@@ -77,14 +77,6 @@ boundaryField
         type            freestream;
         freestreamValue uniform {Uvec};
     }}
-    top
-    {{
-        type            symmetry;
-    }}
-    bottom
-    {{
-        type            symmetry;
-    }}
     {airfoil_patch}
     {{
         type            noSlip;
@@ -121,14 +113,6 @@ boundaryField
         type            freestream;
         freestreamValue uniform 0;
     }}
-    top
-    {{
-        type            symmetry;
-    }}
-    bottom
-    {{
-        type            symmetry;
-    }}
     {airfoil_patch}
     {{
         type            zeroGradient;
@@ -162,14 +146,6 @@ boundaryField
     {{
         type            freestream;
         freestreamValue uniform {K_INF};
-    }}
-    top
-    {{
-        type            symmetry;
-    }}
-    bottom
-    {{
-        type            symmetry;
     }}
     {airfoil_patch}
     {{
@@ -206,14 +182,6 @@ boundaryField
         type            freestream;
         freestreamValue uniform {OMEGA_INF};
     }}
-    top
-    {{
-        type            symmetry;
-    }}
-    bottom
-    {{
-        type            symmetry;
-    }}
     {airfoil_patch}
     {{
         type            omegaWallFunction;
@@ -248,14 +216,6 @@ boundaryField
     {{
         type            calculated;
         value           uniform 0;
-    }}
-    top
-    {{
-        type            symmetry;
-    }}
-    bottom
-    {{
-        type            symmetry;
     }}
     {airfoil_patch}
     {{
@@ -371,6 +331,193 @@ boundary
     {{
         type empty;
         faces ( (4 5 6 7) );
+    }}
+);
+"""
+
+
+def _build_block_mesh_cmesh(airfoil_patch: str, stl_name: str) -> str:
+    """
+    C-mesh blockMeshDict using the blockMesh project feature.
+    Produces a true 2D mesh (1 cell in z, no snappyHexMesh z-splitting).
+
+    x=chord (0=LE,1=TE), y=lift/vertical, z=span (empty, 0→0.1).
+    C-arc radius 20 centred at (0.3,0). Wake extends to x=40.
+    6 blocks: lower/upper × (leading|middle|wake). 24 vertices total.
+    """
+    R        = 20.0
+    xS       = 0.3
+    yL       = -0.06
+    yU       =  0.06
+    xMax     = 40.0
+    xMin_prj = -20.0   # projects onto cylinder → (-19.7, 0)
+
+    xUC = 40
+    xMC = 60
+    xDC = 60
+    nW  = 80
+
+    lG  = 0.2
+    xUG = 5.0
+    xDG = 10.0
+    wG  = 400
+
+    return f"""FoamFile
+{{
+    version     2.0;
+    format      ascii;
+    class       dictionary;
+    location    "system";
+    object      blockMeshDict;
+}}
+
+scale   1;
+
+geometry
+{{
+    {airfoil_patch}
+    {{
+        type   triSurfaceMesh;
+        file   "{stl_name}";
+    }}
+    inlet_arc
+    {{
+        type   cylinder;
+        point1 ({xS} 0 -1e6);
+        point2 ({xS} 0  1e6);
+        radius {R};
+    }}
+}}
+
+vertices
+(
+    // z=0.1 plane, vertices 0-11
+    project ({xS}        {-R}  0.1) (inlet_arc)      // 0
+    (1       {-R}        0.1)                         // 1
+    ({xMax}  {-R}        0.1)                         // 2
+    project ({xMin_prj}   0   0.1) (inlet_arc)       // 3
+    project (0            0   0.1) ({airfoil_patch}) // 4  LE
+    project (1            0   0.1) ({airfoil_patch}) // 5  TE
+    ({xMax}  0            0.1)                        // 6
+    project ({xS}        {yL}  0.1) ({airfoil_patch}) // 7  lower surface
+    project ({xS}        {yU}  0.1) ({airfoil_patch}) // 8  upper surface
+    project ({xS}        {R}   0.1) ({airfoil_patch}) // 9  snaps to upper surf
+    project (1           {R}   0.1) ({airfoil_patch}) // 10 snaps to TE
+    ({xMax}  {R}          0.1)                         // 11
+
+    // z=0 plane, vertices 12-23
+    project ({xS}        {-R}  0) (inlet_arc)       // 12
+    (1       {-R}        0)                          // 13
+    ({xMax}  {-R}        0)                          // 14
+    project ({xMin_prj}   0   0) (inlet_arc)        // 15
+    project (0            0   0) ({airfoil_patch})  // 16 LE
+    project (1            0   0) ({airfoil_patch})  // 17 TE
+    ({xMax}  0            0)                         // 18
+    project ({xS}        {yL}  0) ({airfoil_patch}) // 19 lower surface
+    project ({xS}        {yU}  0) ({airfoil_patch}) // 20 upper surface
+    project ({xS}        {R}   0) ({airfoil_patch}) // 21 snaps to upper surf
+    project (1           {R}   0) ({airfoil_patch}) // 22 snaps to TE
+    ({xMax}  {R}          0)                         // 23
+);
+
+blocks
+(
+    hex ( 7  4 16 19  0  3 15 12) ({xUC} 1 {nW})
+    edgeGrading
+    (
+        {lG}  {lG}  {xUG} {xUG}
+        1 1 1 1
+        {wG} {wG} {wG} {wG}
+    )
+    hex ( 5  7 19 17  1  0 12 13) ({xMC} 1 {nW}) simpleGrading (1 1 {wG})
+    hex (17 18  6  5 13 14  2  1) ({xDC} 1 {nW}) simpleGrading ({xDG} 1 {wG})
+    hex (20 16  4  8 21 15  3  9) ({xUC} 1 {nW})
+    edgeGrading
+    (
+        {lG}  {lG}  {xUG} {xUG}
+        1 1 1 1
+        {wG} {wG} {wG} {wG}
+    )
+    hex (17 20  8  5 22 21  9 10) ({xMC} 1 {nW}) simpleGrading (1 1 {wG})
+    hex ( 5  6 18 17 10 11 23 22) ({xDC} 1 {nW}) simpleGrading ({xDG} 1 {wG})
+);
+
+edges
+(
+    project  4  7 ({airfoil_patch})
+    project  7  5 ({airfoil_patch})
+    project  4  8 ({airfoil_patch})
+    project  8  5 ({airfoil_patch})
+    project 16 19 ({airfoil_patch})
+    project 19 17 ({airfoil_patch})
+    project 16 20 ({airfoil_patch})
+    project 20 17 ({airfoil_patch})
+    project  3  0 (inlet_arc)
+    project  3  9 (inlet_arc)
+    project 15 12 (inlet_arc)
+    project 15 21 (inlet_arc)
+);
+
+boundary
+(
+    {airfoil_patch}
+    {{
+        type wall;
+        faces
+        (
+            ( 4  7 19 16)
+            ( 7  5 17 19)
+            ( 5  8 20 17)
+            ( 8  4 16 20)
+        );
+    }}
+    inlet
+    {{
+        type patch;
+        faces
+        (
+            ( 3  0 12 15)
+            ( 0  1 13 12)
+            ( 1  2 14 13)
+            (11 10 22 23)
+            (10  9 21 22)
+            ( 9  3 15 21)
+        );
+    }}
+    outlet
+    {{
+        type patch;
+        faces
+        (
+            ( 2  6 18 14)
+            ( 6 11 23 18)
+        );
+    }}
+    front
+    {{
+        type empty;
+        faces
+        (
+            ( 3  4  7  0)
+            ( 0  7  5  1)
+            ( 1  5  6  2)
+            ( 3  9  8  4)
+            ( 9 10  5  8)
+            (10 11  6  5)
+        );
+    }}
+    back
+    {{
+        type empty;
+        faces
+        (
+            (15 16 19 12)
+            (12 19 17 13)
+            (13 17 18 14)
+            (15 21 20 16)
+            (21 22 17 20)
+            (22 23 18 17)
+        );
     }}
 );
 """
@@ -734,15 +881,15 @@ def build_case(case_dir: str, airfoil: str, alpha_deg: float, stl_src: str | Non
     case = Path(case_dir)
     dirs = [
         case / "0",
-        case / "constant" / "triSurface",
+        case / "constant" / "geometry",
         case / "system",
     ]
     for d in dirs:
         d.mkdir(parents=True, exist_ok=True)
 
-    # Copy STL
+    # Copy STL into constant/geometry/ — blockMesh project feature looks there
     if stl_src and Path(stl_src).exists():
-        dst = case / "constant" / "triSurface" / stl_name
+        dst = case / "constant" / "geometry" / stl_name
         shutil.copy2(stl_src, dst)
 
     # 0/
@@ -757,9 +904,7 @@ def build_case(case_dir: str, airfoil: str, alpha_deg: float, stl_src: str | Non
     (case / "constant" / "turbulenceProperties").write_text(_build_turbulence_props())
 
     # system/
-    (case / "system" / "blockMeshDict").write_text(_build_block_mesh(patch))
-    (case / "system" / "snappyHexMeshDict").write_text(_build_snappy(patch, key.upper() + ".stl"))
-    (case / "system" / "surfaceFeatureExtractDict").write_text(_build_surface_feature_extract(key.upper() + ".stl"))
+    (case / "system" / "blockMeshDict").write_text(_build_block_mesh_cmesh(patch, key.upper() + ".stl"))
     (case / "system" / "controlDict").write_text(_build_control_dict(patch, alpha_deg))
     (case / "system" / "fvSchemes").write_text(_build_fv_schemes())
     (case / "system" / "fvSolution").write_text(_build_fv_solution())

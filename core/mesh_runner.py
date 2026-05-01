@@ -2,10 +2,8 @@
 Runs the full OpenFOAM meshing and solving pipeline for one case directory.
 
 Pipeline:
-  1. surfaceFeatureExtract
-  2. blockMesh
-  3. snappyHexMesh -overwrite
-  4. simpleFoam
+  1. blockMesh  (C-mesh via project feature, no snappyHexMesh)
+  2. simpleFoam
 
 All commands source /usr/lib/openfoam/openfoam2412/etc/bashrc first.
 """
@@ -45,10 +43,8 @@ def run_pipeline(case_dir: str, airfoil: str) -> bool:
     """
     cwd = str(Path(case_dir).resolve())
     steps = [
-        ("surfaceFeatureExtract",    "surfaceFeatureExtract"),
-        ("blockMesh",                "blockMesh"),
-        ("snappyHexMesh -overwrite", "snappyHexMesh -overwrite"),
-        ("simpleFoam",               "simpleFoam"),
+        ("blockMesh",  "blockMesh"),
+        ("simpleFoam", "simpleFoam"),
     ]
     for cmd, label in steps:
         if not _run(cmd, cwd, label):
@@ -66,10 +62,8 @@ def run_pipeline_verbose(case_dir: str, airfoil: str, log_dir: str | None = None
     ldir.mkdir(parents=True, exist_ok=True)
 
     steps = [
-        ("surfaceFeatureExtract",    "surfaceFeatureExtract"),
-        ("blockMesh",                "blockMesh"),
-        ("snappyHexMesh -overwrite", "snappyHexMesh"),
-        ("simpleFoam",               "simpleFoam"),
+        ("blockMesh",  "blockMesh"),
+        ("simpleFoam", "simpleFoam"),
     ]
 
     for cmd, label in steps:
