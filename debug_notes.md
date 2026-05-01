@@ -199,3 +199,333 @@ checkMesh 2>&1 | grep -i "empty\|front\|back"
 source /usr/lib/openfoam/openfoam2412/etc/bashrc
 cat $FOAM_TUTORIALS/incompressible/simpleFoam/airFoil2D/system/blockMeshDict
 ```
+
+---
+
+## 7. Session 2 Findings — C-Mesh Analysis (2026-05-01)
+
+### 7.1 Tutorial reference found
+
+The correct reference is NOT `incompressible/simpleFoam/airFoil2D` (that tutorial uses a
+pre-built binary polyMesh with no blockMeshDict). The correct reference is:
+
+```
+/usr/lib/openfoam/openfoam2412/tutorials/compressible/rhoSimpleFoam/aerofoilNACA0012/
+```
+
+Its `Allrun.pre` pipeline:
+```bash
+mkdir -p constant/geometry
+cp NACA0012.obj.gz constant/geometry/
+restore0Dir
+blockMesh                          # build 2D mesh using project feature
+transformPoints -scale '(1 0 1)'  # collapse y to 0 (flatten to x-z plane)
+extrudeMesh                        # extrude 1 cell in -y direction, thickness 0.1
+```
+
+The `extrudeMeshDict` (in system/) configures:
+```
+constructFrom    patch;
+sourceCase       "<case>";
+sourcePatches    (back);
+exposedPatchName front;
+extrudeModel     linearDirection;
+direction        (0 -1 0);
+thickness        0.1;
+```
+
+### 7.2 Tutorial coordinate system
+
+**CRITICAL:** The tutorial uses a DIFFERENT coordinate system than our case:
+
+| Direction | Tutorial blockMeshDict | Our case |
+|-----------|----------------------|----------|
+| chord     | x (0=LE, 1=TE)       | x (same) |
+| lift/vert | **z** (zMin=-2, zMax=2) | **y** (yMin=-20, yMax=20) |
+| span/empty| **y** (-0.1 to +0.1) | **z** (0 to 0.1) |
+
+In the tutorial, the airfoil profile lies in the **x-z plane** (chord × lift).
+In our case, the airfoil profile lies in the **x-y plane** (chord × lift).
+
+The NACA0012.obj resource file confirms this:
+- Vertices at y=±0.5 (span direction), x=0→1 (chord), z=−0.06→+0.06 (lift/thickness)
+- The airfoil profile is in the x-z plane with y as the extruded span direction
+
+### 7.3 Tutorial blockMeshDict structure
+
+The blockMeshDict uses the `geometry` + `project` feature:
+
+```
+geometry {
+    aerofoil { type triSurfaceMesh; file "NACA0012.obj"; }
+    cylinder {
+        type   cylinder;
+        point1 (0.3 -1e3 0);   // axis through (xSample, *, zLead=0) in y direction
+        point2 (0.3  1e3 0);
+        radius 2;               // = domain.zMax = far-field radius
+    }
+}
+```
+
+**24 vertices total** (12 at y=-0.1, 12 at y=+0.1, the span direction):
+
+```
+Back face (y=-0.1), vertex 0-11:
+v0:  project (0.3, -0.1, -2) → cylinder  = bottom of C-arc at x=0.3
+v1:  (1, -0.1, -2)                        = lower corner at TE
+v2:  (4, -0.1, -2)                        = lower right corner (outlet)
+v3:  project (-4, -0.1, 0) → cylinder    = left of C-arc (-1.7, -0.1, 0) [snapped]
+v4:  project (0, -0.1, 0) → aerofoil     = LE on airfoil
+v5:  project (1, -0.1, 0) → aerofoil     = TE on airfoil
+v6:  (4, -0.1, 0)                         = right middle (outlet)
+v7:  project (0.3, -0.1, -0.06) → aerofoil = lower surface at x=0.3
+v8:  project (0.3, -0.1, 0.06) → aerofoil  = upper surface at x=0.3
+v9:  project (0.3, -0.1, 2) → aerofoil     = snaps to upper surface at x=0.3 (= v8 position)
+v10: project (1, -0.1, 2) → aerofoil       = snaps to TE (= v5 position)
+v11: (4, -0.1, 2)                           = upper right corner (outlet)
+
+Front face (y=+0.1), vertex 12-23: identical with y=+0.1
+```
+
+**v9=v8 and v10=v5 intentional** — the block at the upper/outer edge of the C-mesh
+is an inlet boundary face that goes from the airfoil upper surface (v9, v21)
+diagonally out to the far-field cylinder (v3, v15). The "outer" face of block 4 is:
+face (v9, v3, v15, v21) = from airfoil upper surface to far-field arc — this IS the
+inlet patch face. The projected edge `project 3 9 (cylinder)` creates the arc along
+the inlet C-boundary between the left-most point (v3) and the upper point where
+the C-mesh boundary meets the upper side of the airfoil.
+
+**6 blocks** (3 on lower side, 3 on upper side):
+```
+hex ( 7  4 16 19  0  3 15 12)  (xUCells 1 zCells)  // lower leading area (LE to x=0.3)
+hex ( 5  7 19 17  1  0 12 13)  (xMCells 1 zCells)  // lower middle (x=0.3 to TE)
+hex (17 18  6  5 13 14  2  1)  (xDCells 1 zCells)  // lower wake (TE to outlet)
+hex (20 16  4  8 21 15  3  9)  (xUCells 1 zCells)  // upper leading area (LE to x=0.3)
+hex (17 20  8  5 22 21  9 10)  (xMCells 1 zCells)  // upper middle (x=0.3 to TE)
+hex ( 5  6 18 17 10 11 23 22)  (xDCells 1 zCells)  // upper wake (TE to outlet)
+```
+
+Cell counts: xUCells=30, xMCells=30, xDCells=40, zCells=80 (wall-normal), 1 (span)
+
+**Projected edges** (these make block edges follow the airfoil surface):
+```
+project 4 7 (aerofoil)   // lower surface, LE to x=0.3 (at y=-0.1)
+project 7 5 (aerofoil)   // lower surface, x=0.3 to TE (at y=-0.1)
+project 4 8 (aerofoil)   // upper surface, LE to x=0.3 (at y=-0.1)
+project 8 5 (aerofoil)   // upper surface, x=0.3 to TE (at y=-0.1)
+project 16 19 (aerofoil) // lower surface at y=+0.1
+project 19 17 (aerofoil)
+project 16 20 (aerofoil) // upper surface at y=+0.1
+project 20 17 (aerofoil)
+project 3  0  (cylinder) // C-arc from left to bottom (at y=-0.1)
+project 3  9  (cylinder) // C-arc from left to upper (inlet boundary edge at y=-0.1)
+project 15 12 (cylinder) // C-arc at y=+0.1
+project 15 21 (cylinder)
+```
+
+**Boundary patches in tutorial:**
+```
+aerofoil: (4 7 19 16) (7 5 17 19) (5 8 20 17) (8 4 16 20)
+inlet:    (3 0 12 15) (0 1 13 12) (1 2 14 13)  [lower half + left arc]
+          (11 10 22 23) (10 9 21 22) (9 3 15 21) [upper half + left arc]
+outlet:   (2 6 18 14) (6 11 23 18)
+back:     (empty, 6 faces at y=-0.1)
+front:    (empty, 6 faces at y=+0.1)
+```
+
+### 7.4 Tutorial mesh result
+
+Running `Allrun.pre` on the tutorial:
+```
+checkMesh output:
+  cells:         16,000
+  faces:         64,240
+  internal faces: 31,760
+  boundary patches: 5
+  Overall domain bounding box: (-1.7, -0.1, -2) to (4, 0, 2)
+  Max non-orthogonality: 30.2°
+  Max aspect ratio: 81.3
+  Mesh OK. (No 2D warning, no non-orthogonality errors)
+```
+
+After extrudeMesh, the final mesh has:
+- Span in y direction: y=[-0.1, 0] (from extrudeMesh direction (0,-1,0), thickness=0.1)
+- x: [-1.7, 4] (chord + far field left and right)
+- z: [-2, 2] (vertical/lift far field)
+
+This is a **perfect 2D mesh** — no z-splitting, all cells have exactly 1 face on each empty patch.
+
+### 7.5 Adaptation plan for our coordinate system
+
+To use the same approach but in our coordinate system (x=chord, y=lift, z=span=empty):
+
+**Coordinate swap needed:** In tutorial coords (x=chord, z=lift, y=span):
+- Swap y ↔ z compared to tutorial
+- Our "front/back" patches are at z=0 and z=0.1 (tutorial uses y=-0.1/+0.1)
+- Our far-field is in x-y plane; cylinder axis must be in z direction
+
+**Adapted vertex layout (our coordinates, at z=0 then z=0.1):**
+
+```
+Domain parameters (to match our existing domain size):
+  xSample = 0.3    # chord-wise split point
+  R = 20.0         # far-field radius, centered at (0.3, 0)
+  xMax = 40.0      # wake extension
+  yMax = 20.0      # = R (far field top/bottom)
+  zSpan = 0.1      # span (empty direction)
+
+Cylinder: centered at (0.3, 0, z_any), axis in z, radius=20
+  → left point: (0.3-20, 0) = (-19.7, 0)
+  → bottom: (0.3, -20)
+  → top: (0.3, +20)
+
+At z=0 (vertices 0-11), at z=0.1 (vertices 12-23):
+v0:  project (0.3, -20, 0) → cylinder   = bottom of C-arc
+v1:  (1, -20, 0)                          = lower corner at TE
+v2:  (40, -20, 0)                         = lower outlet corner
+v3:  project (-20, 0, 0) → cylinder     = left of C-arc → snaps to (-19.7, 0, 0)
+v4:  project (0, 0, 0) → aerofoil       = LE = (0, 0, 0)
+v5:  project (1, 0, 0) → aerofoil       = TE = (1, 0, 0)
+v6:  (40, 0, 0)                           = right middle (outlet)
+v7:  project (0.3, -0.06, 0) → aerofoil = lower surface at x=0.3
+v8:  project (0.3, 0.06, 0) → aerofoil  = upper surface at x=0.3
+v9:  project (0.3, 20, 0) → aerofoil    = snaps to upper surface (same as v8)
+v10: project (1, 20, 0) → aerofoil      = snaps to TE (same as v5)
+v11: (40, 20, 0)                          = upper outlet corner
+
+v12-v23: same but at z=0.1
+```
+
+**Adapted geometry section:**
+```
+geometry {
+    NACA0012 {        // must match STL file name
+        type triSurfaceMesh;
+        file "NACA0012.stl";
+    }
+    cylinder {
+        type   cylinder;
+        point1 (0.3 0 -1e3);   // cylinder axis in z direction
+        point2 (0.3 0  1e3);
+        radius 20;
+    }
+}
+```
+
+**Block connectivity** (same 6 blocks, adapting vertex indices):
+```
+// zCells = wall-normal cells (from airfoil surface to far field)
+// xUCells = cells from LE to x=0.3 (leading portion)
+// xMCells = cells from x=0.3 to TE (trailing portion)
+// xDCells = cells in wake (TE to xMax)
+// 1 cell in span (z direction)
+
+hex ( 7  4 16 19  0  3 15 12)  (xUCells 1 zCells)  // lower leading
+hex ( 5  7 19 17  1  0 12 13)  (xMCells 1 zCells)  // lower middle
+hex (17 18  6  5 13 14  2  1)  (xDCells 1 zCells)  // lower wake
+hex (20 16  4  8 21 15  3  9)  (xUCells 1 zCells)  // upper leading
+hex (17 20  8  5 22 21  9 10)  (xMCells 1 zCells)  // upper middle
+hex ( 5  6 18 17 10 11 23 22)  (xDCells 1 zCells)  // upper wake
+```
+
+**Adapted projected edges:**
+```
+// Airfoil surface edges (at z=0)
+project 4 7 (NACA0012)    // lower surface LE to x=0.3
+project 7 5 (NACA0012)    // lower surface x=0.3 to TE
+project 4 8 (NACA0012)    // upper surface LE to x=0.3
+project 8 5 (NACA0012)    // upper surface x=0.3 to TE
+// Same edges at z=0.1 (vertices 12-23)
+project 16 19 (NACA0012)
+project 19 17 (NACA0012)
+project 16 20 (NACA0012)
+project 20 17 (NACA0012)
+// C-arc inlet edges
+project 3  0  (cylinder)  // arc from left to bottom at z=0
+project 3  9  (cylinder)  // arc from left to upper at z=0
+project 15 12 (cylinder)  // arc at z=0.1
+project 15 21 (cylinder)
+```
+
+**Adapted boundary patches:**
+```
+aerofoil {
+    type wall;
+    faces ( (4 7 19 16) (7 5 17 19) (5 8 20 17) (8 4 16 20) );
+}
+inlet {
+    type patch;
+    faces (
+        (3 0 12 15)   // left C-arc
+        (0 1 13 12)   // lower straight
+        (1 2 14 13)   // lower bottom (outlet area bottom)
+        (11 10 22 23) // upper top
+        (10 9 21 22)  // upper straight
+        (9 3 15 21)   // upper C-arc
+    );
+}
+outlet {
+    type patch;
+    faces ( (2 6 18 14) (6 11 23 18) );
+}
+front {
+    type empty;
+    faces ( (15 16 19 12) (19 17 13 12) (17 18 14 13) ... );  // z=0.1 faces
+}
+back {
+    type empty;
+    faces ( (3 4 7 0) (7 5 1 0) ... );  // z=0 faces
+}
+```
+
+**Grading (recommended starting values):**
+```
+xUCells = 40    // LE to x=0.3 (leading portion)
+xMCells = 60    // x=0.3 to TE (trailing portion)
+xDCells = 60    // wake
+nWall   = 80    // wall-normal cells (airfoil to far field)
+wallGrading = 200  // expand outward from wall (very fine near wall)
+leadGrading = 0.2  // cluster toward LE
+xDGrading  = 10    // expand downstream in wake
+```
+
+### 7.6 Pipeline changes needed
+
+**mesh_runner.py**: Remove `surfaceFeatureExtract` and `snappyHexMesh -overwrite` steps.
+New pipeline: `blockMesh` only (no STL needed since project uses STL from triSurface/).
+OR use `blockMesh → extrudeMesh` like the tutorial (then need extrudeMeshDict too).
+
+**Simpler option for our pipeline**: Use the direct blockMeshDict approach (no extrudeMesh)
+because we already have z=0 and z=0.1 vertices explicitly in the blockMeshDict. No need
+for transformPoints + extrudeMesh. The tutorial uses that pattern only because its
+blockMeshDict was originally in the x-z plane and needed extrusion.
+
+**case_builder.py changes needed:**
+1. Replace `_build_block_mesh()` with new `_build_block_mesh_cmesh()` that outputs
+   the 6-block C-mesh topology with project vertices and projected edges
+2. Replace `_build_snappy()` call in `build_case()` with nothing (delete it)
+3. Remove `_build_surface_feature_extract()` call  
+4. The STL file is still needed (for the `project` feature in blockMeshDict)
+5. Keep `stl_generator.py` as-is — the STL is used for projection, not for snappyHexMesh
+6. Update boundary patch names: replace 'top'/'bottom' symmetry with 'inlet' freestream
+   (top and bottom are now part of the inlet in C-mesh topology)
+7. Update 0/U, 0/p, 0/k, 0/omega, 0/nut to use `inlet` instead of `top`/`bottom`
+
+### 7.7 NEXT STEP
+
+**Write `_build_block_mesh_cmesh(airfoil_patch, stl_name)` in case_builder.py.**
+
+The function returns a complete blockMeshDict string with:
+- The geometry section (triSurface STL + cylinder)
+- 24 vertices (12 at z=0, 12 at z=0.1)
+- 6 blocks (hex definitions as above)
+- Projected edges for airfoil surface and C-arc
+- Boundary patches: aerofoil (wall), inlet (freestream), outlet (patch), front/back (empty)
+
+Then:
+1. Update `build_case()` to call `_build_block_mesh_cmesh()` instead of `_build_block_mesh()` + `_build_snappy()`
+2. Update `_build_U()`, `_build_p_clean()`, `_build_k()`, `_build_omega()`, `_build_nut()` 
+   to replace `top`/`bottom` symmetry blocks with `inlet` freestream block
+3. Update `mesh_runner.py` `run_pipeline()` to drop surfaceFeatureExtract and snappyHexMesh steps
+4. Test on naca0012 alpha=6°, verify checkMesh gives "Mesh OK" with no 2D warning
+5. Run simpleFoam, verify Cl ≈ 0.65
