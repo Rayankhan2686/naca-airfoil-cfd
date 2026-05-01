@@ -352,10 +352,10 @@ def _build_block_mesh_cmesh(airfoil_patch: str, stl_name: str) -> str:
     xMax     = 40.0
     xMin_prj = -20.0   # projects onto cylinder → (-19.7, 0)
 
-    xUC = 40
-    xMC = 60
-    xDC = 60
-    nW  = 80
+    xUC = 75
+    xMC = 112
+    xDC = 113
+    nW  = 200
 
     lG  = 0.2
     xUG = 5.0
@@ -826,13 +826,13 @@ relaxationFactors
 {
     fields
     {
-        p               0.3;
+        p               0.2;
     }
     equations
     {
-        U               0.7;
-        k               0.7;
-        omega           0.7;
+        U               0.3;
+        k               0.3;
+        omega           0.3;
     }
 }
 """
