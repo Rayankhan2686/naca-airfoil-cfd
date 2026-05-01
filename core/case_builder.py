@@ -336,7 +336,8 @@ boundary
 """
 
 
-def _build_block_mesh_cmesh(airfoil_patch: str, stl_name: str) -> str:
+def _build_block_mesh_cmesh(airfoil_patch: str, stl_name: str,
+                            nx: int = 200, ny: int = 150) -> str:
     """
     C-mesh blockMeshDict using the blockMesh project feature.
     Produces a true 2D mesh (1 cell in z, no snappyHexMesh z-splitting).
@@ -344,6 +345,10 @@ def _build_block_mesh_cmesh(airfoil_patch: str, stl_name: str) -> str:
     x=chord (0=LE,1=TE), y=lift/vertical, z=span (empty, 0→0.1).
     C-arc radius 20 centred at (0.3,0). Wake extends to x=40.
     6 blocks: lower/upper × (leading|middle|wake). 24 vertices total.
+
+    nx = total chordwise cells (distributed proportionally across the 3 sections).
+    ny = normal cells (from airfoil surface to far-field arc).
+    Z is always 1 (2D empty direction, locked).
     """
     R        = 20.0
     xS       = 0.3
@@ -352,10 +357,12 @@ def _build_block_mesh_cmesh(airfoil_patch: str, stl_name: str) -> str:
     xMax     = 40.0
     xMin_prj = -20.0   # projects onto cylinder → (-19.7, 0)
 
-    xUC = 75
-    xMC = 112
-    xDC = 113
-    nW  = 200
+    # Distribute nx chordwise cells proportionally to the baseline 75:112:113 split
+    _BASE = 300
+    xUC = max(1, round(nx * 75  / _BASE))
+    xMC = max(1, round(nx * 112 / _BASE))
+    xDC = max(1, nx - xUC - xMC)
+    nW  = ny
 
     lG  = 0.2
     xUG = 5.0
@@ -862,7 +869,8 @@ simpleCoeffs
 # Public API
 # ---------------------------------------------------------------------------
 
-def build_case(case_dir: str, airfoil: str, alpha_deg: float, stl_src: str | None = None):
+def build_case(case_dir: str, airfoil: str, alpha_deg: float, stl_src: str | None = None,
+               nx: int = 200, ny: int = 150):
     """
     Write a complete OpenFOAM case to *case_dir*.
 
@@ -904,7 +912,7 @@ def build_case(case_dir: str, airfoil: str, alpha_deg: float, stl_src: str | Non
     (case / "constant" / "turbulenceProperties").write_text(_build_turbulence_props())
 
     # system/
-    (case / "system" / "blockMeshDict").write_text(_build_block_mesh_cmesh(patch, key.upper() + ".stl"))
+    (case / "system" / "blockMeshDict").write_text(_build_block_mesh_cmesh(patch, key.upper() + ".stl", nx=nx, ny=ny))
     (case / "system" / "controlDict").write_text(_build_control_dict(patch, alpha_deg))
     (case / "system" / "fvSchemes").write_text(_build_fv_schemes())
     (case / "system" / "fvSolution").write_text(_build_fv_solution())

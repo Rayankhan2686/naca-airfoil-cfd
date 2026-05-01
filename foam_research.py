@@ -9,6 +9,7 @@ Mode C: Exit
 
 import csv
 import datetime
+import json
 import os
 import re
 import shutil
@@ -30,12 +31,13 @@ from core.results_extractor import (
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
-SCRIPTS_DIR         = Path(__file__).parent
-CASES_DIR           = SCRIPTS_DIR / "cases"
-STL_DIR             = SCRIPTS_DIR / "stl"
-RESULTS_CSV         = SCRIPTS_DIR / "results" / "airfoil_results.csv"
-CUSTOM_AIRFOILS_DIR = Path.home() / "OpenFOAM" / "airfoils"
-MESH_STATS_DIR      = Path.home() / "OpenFOAM" / "results"
+SCRIPTS_DIR           = Path(__file__).parent
+CASES_DIR             = SCRIPTS_DIR / "cases"
+STL_DIR               = SCRIPTS_DIR / "stl"
+RESULTS_CSV           = SCRIPTS_DIR / "results" / "airfoil_results.csv"
+CUSTOM_AIRFOILS_DIR   = Path.home() / "OpenFOAM" / "airfoils"
+MESH_STATS_DIR        = Path.home() / "OpenFOAM" / "results"
+RESEARCH_MESH_CONFIG  = SCRIPTS_DIR / "research_mesh_config.json"
 
 # Directories scanned automatically when importing a SolidWorks STL
 _STL_SCAN_DIRS = [
@@ -72,6 +74,84 @@ def _display(key: str) -> str:
 # MODE A — Research Mode  (NACA 0012 / 2412 / 4412)
 # ===========================================================================
 
+# ---------------------------------------------------------------------------
+# Option 6 — Research mesh configuration
+# ---------------------------------------------------------------------------
+_MESH_DEFAULTS = {"nx": 200, "ny": 150}
+
+
+def _load_research_mesh_config() -> dict:
+    """Load nx/ny from research_mesh_config.json; fall back to defaults."""
+    try:
+        with open(RESEARCH_MESH_CONFIG) as f:
+            data = json.load(f)
+        return {
+            "nx": max(100, min(500, int(data.get("nx", 200)))),
+            "ny": max(80,  min(400, int(data.get("ny", 150)))),
+        }
+    except (FileNotFoundError, json.JSONDecodeError, ValueError):
+        return dict(_MESH_DEFAULTS)
+
+
+def _save_research_mesh_config(cfg: dict):
+    with open(RESEARCH_MESH_CONFIG, "w") as f:
+        json.dump({"nx": cfg["nx"], "ny": cfg["ny"]}, f, indent=2)
+
+
+def task_mesh_settings():
+    ui.section("Mesh Settings")
+    cfg = _load_research_mesh_config()
+
+    while True:
+        nx, ny = cfg["nx"], cfg["ny"]
+        print(f"\n  Current research mesh settings:")
+        print(f"    Cells in X (streamwise/chordwise) : {nx}  [100–500]")
+        print(f"    Cells in Y (normal to flow)       : {ny}  [80–400]")
+        print(f"    Cells in Z (span)                 : 1    [LOCKED]")
+
+        if nx < 150 or ny < 100:
+            ui.warn("Below minimum for publication quality results")
+        if nx > 400 or ny > 300:
+            ui.warn("Very fine mesh — each simulation will take over 30 minutes")
+
+        print()
+        print("    1) Change X cells (streamwise/chordwise)  [100–500]")
+        print("    2) Change Y cells (normal to flow)         [80–400]")
+        print("    3) Reset to publication defaults (200 × 150)")
+        print("    0) Back")
+        print()
+
+        choice = input(f"  {ui._c(ui._C, 'Select')}: ").strip()
+
+        if choice == "1":
+            new_nx = ui.ask_int("Cells in X (streamwise/chordwise) [100-500]", default=nx)
+            if not 100 <= new_nx <= 500:
+                ui.warn(f"Value must be between 100 and 500. Got {new_nx}.")
+                continue
+            cfg["nx"] = new_nx
+            _save_research_mesh_config(cfg)
+            ui.success(f"Saved: X cells = {new_nx}")
+
+        elif choice == "2":
+            new_ny = ui.ask_int("Cells in Y (normal to flow) [80-400]", default=ny)
+            if not 80 <= new_ny <= 400:
+                ui.warn(f"Value must be between 80 and 400. Got {new_ny}.")
+                continue
+            cfg["ny"] = new_ny
+            _save_research_mesh_config(cfg)
+            ui.success(f"Saved: Y cells = {new_ny}")
+
+        elif choice == "3":
+            cfg = dict(_MESH_DEFAULTS)
+            _save_research_mesh_config(cfg)
+            ui.success("Reset to publication defaults: 200 × 150")
+
+        elif choice == "0":
+            break
+        else:
+            ui.warn("Enter 1, 2, 3, or 0.")
+
+
 def task_generate_stl():
     ui.section("Generate STL")
     airfoil = ui.choose_airfoil()
@@ -107,9 +187,11 @@ def _run_one(airfoil: str, alpha_deg: float) -> bool:
     case_name = f"{airfoil}_a{alpha_deg:+.1f}".replace("+", "p").replace("-", "m").replace(".", "_")
     case_dir  = str(CASES_DIR / case_name)
 
-    ui.info(f"Building case: {case_dir}")
+    mesh_cfg = _load_research_mesh_config()
+    ui.info(f"Building case: {case_dir}  (mesh {mesh_cfg['nx']}×{mesh_cfg['ny']}×1)")
     try:
-        build_case(case_dir, airfoil, alpha_deg, stl_src=str(stl_path))
+        build_case(case_dir, airfoil, alpha_deg, stl_src=str(stl_path),
+                   nx=mesh_cfg["nx"], ny=mesh_cfg["ny"])
     except Exception as exc:
         ui.error(f"Case build failed: {exc}")
         return False
@@ -322,22 +404,39 @@ def _run_checkmesh_on_case(alpha: float, case_path: Path) -> dict | None:
     return _parse_checkmesh(output, alpha)
 
 
+def _ansi_len(s: str) -> int:
+    """Return visible length of a string, ignoring ANSI escape codes."""
+    return len(re.sub(r'\033\[[0-9;]*m', '', s))
+
+
+def _pad_ansi(s: str, width: int) -> str:
+    """Left-pad s to *width* visible characters, respecting ANSI escape codes."""
+    return s + ' ' * max(0, width - _ansi_len(s))
+
+
 def _print_mesh_stats_table(rows: list[dict]):
     """Print a formatted, colour-coded mesh statistics table."""
     cols   = ["Alpha",  "Cells", "Faces",  "Points", "NonOrtho", "Skewness", "MinVol",    "Aspect"]
     widths = [8,        8,       8,        8,        10,         10,         12,          10]
 
-    def _fmt(r: dict) -> tuple:
-        return (
+    def _fmt(r: dict) -> list:
+        no_val = r["max_nonortho"]
+        if no_val is not None:
+            no_str = f"{no_val:.2f}"
+            no_col = ui._G if no_val < 70.0 else ui._R
+            no_cell = ui._c(no_col, no_str)
+        else:
+            no_cell = "N/A"
+        return [
             f"{r['alpha']:+.1f}°",
             str(r["cells"])   if r["cells"]   is not None else "N/A",
             str(r["faces"])   if r["faces"]   is not None else "N/A",
             str(r["points"])  if r["points"]  is not None else "N/A",
-            f"{r['max_nonortho']:.2f}"   if r["max_nonortho"] is not None else "N/A",
+            no_cell,
             f"{r['max_skewness']:.4f}"   if r["max_skewness"] is not None else "N/A",
             f"{r['min_volume']:.2e}"     if r["min_volume"]   is not None else "N/A",
             f"{r['max_aspect']:.2f}"     if r["max_aspect"]   is not None else "N/A",
-        )
+        ]
 
     hdr = "  " + "  ".join(f"{h:<{w}}" for h, w in zip(cols, widths)) + "  Quality"
     sep = "  " + "-" * (len(hdr) - 2 + 14)
@@ -345,10 +444,38 @@ def _print_mesh_stats_table(rows: list[dict]):
     print(sep)
 
     for r in rows:
-        body = "  " + "  ".join(f"{v:<{w}}" for v, w in zip(_fmt(r), widths))
+        cells = _fmt(r)
+        body = "  " + "  ".join(_pad_ansi(v, w) for v, w in zip(cells, widths))
         q = r.get("quality", "UNKNOWN")
         qcol = ui._G if q == "PASS" else (ui._R if "FAIL" in q else ui._Y)
         print(body + "  " + ui._c(qcol, q))
+    print()
+
+
+def _print_mesh_stats_explanation():
+    """Print a plain-English explanation of each mesh quality metric."""
+    print(ui._c(ui._B + ui._C, "\n  Mesh Quality Metrics Explained:"))
+    print()
+    print("    Non-Orthogonality  — angle (°) between the cell-centre-to-face vector")
+    print("      and the face normal. Values under 70 = PASS (solver is stable).")
+    print("      Over 70 = FAIL; high non-orthogonality causes numerical diffusion")
+    print("      and can prevent the solver from converging.")
+    print()
+    print("    Skewness  — how distorted a cell face is from its ideal shape.")
+    print("      Values below 4 are good. Higher skewness near the trailing edge")
+    print("      or in tight corners can cause the solver to diverge.")
+    print()
+    print("    Min Volume  — the smallest cell volume in the mesh. Must be positive.")
+    print("      A negative value means at least one cell is inside-out; the")
+    print("      simulation cannot run until this is fixed.")
+    print()
+    print("    Max Aspect Ratio  — longest cell edge divided by shortest cell edge.")
+    print("      High values (>1000) are normal in boundary-layer cells near the")
+    print("      airfoil wall but should be low in the freestream region.")
+    print()
+    print("    Overall Quality  — OpenFOAM's built-in mesh check result.")
+    print("      PASS = all internal checks passed. FAIL(n) = n checks failed;")
+    print("      inspect the checkMesh log for details before running simulations.")
     print()
 
 
@@ -420,6 +547,9 @@ def task_mesh_stats():
     _save_mesh_stats_csv(csv_path, stats)
     ui.success(f"Saved mesh stats CSV → {csv_path}")
 
+    # 7. Plain-English explanation
+    _print_mesh_stats_explanation()
+
 
 # ---------------------------------------------------------------------------
 # ParaView visualisation (shared by both modes)
@@ -490,7 +620,8 @@ def menu_foam_research():
         print("    3) Run angle sweep  (29 angles: -4° to 20°, 0.5° steps at 8°–12°)")
         print("    4) View results")
         print("    5) Visualize in ParaView")
-        print("    6) View Mesh Statistics by Airfoil and Angle")
+        print("    6) Mesh Settings  (cell counts for Research simulations)")
+        print("    7) View Mesh Statistics by Airfoil and Angle")
         print("    0) Back")
 
         choice = input(f"  {ui._c(ui._C, 'Select')}: ").strip()
@@ -505,6 +636,8 @@ def menu_foam_research():
         elif choice == "5":
             task_visualize_paraview()
         elif choice == "6":
+            task_mesh_settings()
+        elif choice == "7":
             task_mesh_stats()
         elif choice == "0":
             break
