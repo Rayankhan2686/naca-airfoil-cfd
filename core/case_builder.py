@@ -781,67 +781,67 @@ wallDist
 """
 
 
-def _build_fv_solution() -> str:
-    return """FoamFile
-{
+def _build_fv_solution(relax_U: float = 0.3, relax_p: float = 0.2) -> str:
+    return f"""FoamFile
+{{
     version     2.0;
     format      ascii;
     class       dictionary;
     location    "system";
     object      fvSolution;
-}
+}}
 
 solvers
-{
+{{
     p
-    {
+    {{
         solver          GAMG;
         smoother        GaussSeidel;
         tolerance       1e-7;
         relTol          0.01;
-    }
+    }}
     U
-    {
+    {{
         solver          smoothSolver;
         smoother        symGaussSeidel;
         tolerance       1e-8;
         relTol          0.1;
-    }
+    }}
     k
-    {
+    {{
         solver          smoothSolver;
         smoother        symGaussSeidel;
         tolerance       1e-8;
         relTol          0.1;
-    }
+    }}
     omega
-    {
+    {{
         solver          smoothSolver;
         smoother        symGaussSeidel;
         tolerance       1e-8;
         relTol          0.1;
-    }
-}
+    }}
+}}
 
 SIMPLE
-{
+{{
     nNonOrthogonalCorrectors 2;
     consistent      yes;
-}
+}}
 
 relaxationFactors
-{
+{{
     fields
-    {
-        p               0.2;
-    }
+    {{
+        p               {relax_p};
+    }}
     equations
-    {
-        U               0.3;
+    {{
+        U               {relax_U};
         k               0.3;
         omega           0.3;
-    }
-}
+    }}
+}}
 """
 
 
@@ -870,7 +870,8 @@ simpleCoeffs
 # ---------------------------------------------------------------------------
 
 def build_case(case_dir: str, airfoil: str, alpha_deg: float, stl_src: str | None = None,
-               nx: int = 200, ny: int = 150):
+               nx: int = 200, ny: int = 150,
+               relax_U: float = 0.3, relax_p: float = 0.2):
     """
     Write a complete OpenFOAM case to *case_dir*.
 
@@ -915,7 +916,7 @@ def build_case(case_dir: str, airfoil: str, alpha_deg: float, stl_src: str | Non
     (case / "system" / "blockMeshDict").write_text(_build_block_mesh_cmesh(patch, key.upper() + ".stl", nx=nx, ny=ny))
     (case / "system" / "controlDict").write_text(_build_control_dict(patch, alpha_deg))
     (case / "system" / "fvSchemes").write_text(_build_fv_schemes())
-    (case / "system" / "fvSolution").write_text(_build_fv_solution())
+    (case / "system" / "fvSolution").write_text(_build_fv_solution(relax_U=relax_U, relax_p=relax_p))
     (case / "system" / "decomposeParDict").write_text(_build_decomposeParDict())
 
     return str(case)
