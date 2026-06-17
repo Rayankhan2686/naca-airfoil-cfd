@@ -673,7 +673,7 @@ def _build_surface_feature_extract(stl_name: str) -> str:
 """
 
 
-def _build_control_dict(airfoil_patch: str, alpha_deg: float) -> str:
+def _build_control_dict(airfoil_patch: str, alpha_deg: float, n_iter: int = 3000) -> str:
     alpha_rad = math.radians(alpha_deg)
     lx = -math.sin(alpha_rad)
     ly =  math.cos(alpha_rad)
@@ -692,7 +692,7 @@ application     simpleFoam;
 startFrom       startTime;
 startTime       0;
 stopAt          endTime;
-endTime         3000;
+endTime         {n_iter};
 deltaT          1;
 writeControl    timeStep;
 writeInterval   500;
@@ -871,7 +871,8 @@ simpleCoeffs
 
 def build_case(case_dir: str, airfoil: str, alpha_deg: float, stl_src: str | None = None,
                nx: int = 200, ny: int = 150,
-               relax_U: float = 0.3, relax_p: float = 0.2):
+               relax_U: float = 0.3, relax_p: float = 0.2,
+               n_iter: int = 3000):
     """
     Write a complete OpenFOAM case to *case_dir*.
 
@@ -914,7 +915,7 @@ def build_case(case_dir: str, airfoil: str, alpha_deg: float, stl_src: str | Non
 
     # system/
     (case / "system" / "blockMeshDict").write_text(_build_block_mesh_cmesh(patch, key.upper() + ".stl", nx=nx, ny=ny))
-    (case / "system" / "controlDict").write_text(_build_control_dict(patch, alpha_deg))
+    (case / "system" / "controlDict").write_text(_build_control_dict(patch, alpha_deg, n_iter=n_iter))
     (case / "system" / "fvSchemes").write_text(_build_fv_schemes())
     (case / "system" / "fvSolution").write_text(_build_fv_solution(relax_U=relax_U, relax_p=relax_p))
     (case / "system" / "decomposeParDict").write_text(_build_decomposeParDict())
