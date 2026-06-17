@@ -13,7 +13,7 @@ from pathlib import Path
 # NACA 4-digit geometry
 # ---------------------------------------------------------------------------
 
-def _naca4(code: str, n_pts: int = 100) -> list[tuple[float, float]]:
+def _naca4(code: str, n_pts: int = 200) -> list[tuple[float, float]]:
     """
     Return (x, y) points along the FULL closed airfoil contour (upper then lower),
     starting and ending at the trailing edge.
@@ -98,7 +98,7 @@ def _tri(f, v0, v1, v2):
 SUPPORTED = {"naca0012", "naca2412", "naca4412"}
 
 
-def generate_stl(airfoil: str, out_dir: str, n_pts: int = 100, span: float = 0.1) -> str:
+def generate_stl(airfoil: str, out_dir: str, n_pts: int = 200, span: float = 0.1) -> str:
     """
     Generate a watertight ASCII STL for *airfoil* (e.g. 'naca0012').
     Returns the path to the written STL file.
