@@ -934,6 +934,120 @@ def menu_custom_mesh():
 
 
 # ===========================================================================
+# Project Information
+# ===========================================================================
+
+def task_project_info():
+    from core.case_builder import V, NU, RHO, CHORD, SPAN, AREF, K_INF, OMEGA_INF
+
+    ui.header("Project Information")
+
+    # ── Physics ──────────────────────────────────────────────────────────────
+    ui.section("Flow Physics")
+    RE = RHO * V * CHORD / (RHO * NU)
+    MU = RHO * NU
+    print(f"    {'Reynolds Number':<30} Re  = 2.00 × 10⁵")
+    print(f"    {'Freestream Velocity':<30} U∞  = {V} m/s")
+    print(f"    {'Air Density':<30} ρ   = {RHO} kg/m³")
+    print(f"    {'Dynamic Viscosity':<30} μ   = {MU:.4e} Pa·s")
+    print(f"    {'Kinematic Viscosity':<30} ν   = {NU:.4e} m²/s")
+    print(f"    {'Chord Length':<30} c   = {CHORD} m")
+    print(f"    {'Span':<30} b   = {SPAN} m")
+    print(f"    {'Reference Area':<30} Aref= {AREF} m²  (chord × span)")
+
+    # ── Turbulence ────────────────────────────────────────────────────────────
+    ui.section("Turbulence Model  (kOmegaSST)")
+    print(f"    {'Model':<30} kOmegaSST  (steady RANS)")
+    print(f"    {'Freestream TKE':<30} k∞  = {K_INF:.3e} m²/s²")
+    print(f"    {'Freestream Omega':<30} ω∞  = {OMEGA_INF} 1/s")
+    print(f"    {'Turbulence Intensity':<30} ~0.1%  (low, typical wind-tunnel)")
+
+    # ── Solver ────────────────────────────────────────────────────────────────
+    ui.section("Solver Settings")
+    print(f"    {'Solver':<30} simpleFoam  (steady incompressible)")
+    print(f"    {'Max Iterations':<30} 3000")
+    print(f"    {'nNonOrthogonalCorrectors':<30} 2")
+    print(f"    {'Pressure solver':<30} GAMG + GaussSeidel")
+    print(f"    {'Velocity solver':<30} smoothSolver + symGaussSeidel")
+    print(f"    {'Default relaxation  U':<30} 0.3  (0.7 for difficult cases)")
+    print(f"    {'Default relaxation  p':<30} 0.2  (0.3 for difficult cases)")
+    print(f"    {'OpenFOAM version':<30} OpenFOAM 2412")
+
+    # ── Mesh ─────────────────────────────────────────────────────────────────
+    ui.section("Mesh (blockMesh C-mesh)")
+    cfg = {}
+    if RESEARCH_MESH_CONFIG.exists():
+        import json
+        with open(RESEARCH_MESH_CONFIG) as f:
+            cfg = json.load(f)
+    nx = cfg.get("nx", 200)
+    ny = cfg.get("ny", 150)
+    print(f"    {'Topology':<30} Structured C-mesh  (no snappyHexMesh)")
+    print(f"    {'Far-field radius':<30} R = 20 m  (20 chord lengths)")
+    print(f"    {'Wake extension':<30} x = 40 m  (40 chord lengths)")
+    print(f"    {'Span cells':<30} 1  (true 2-D, empty BC)")
+    print(f"    {'Chord-wise cells (nx)':<30} {nx}")
+    print(f"    {'Wall-normal cells (ny)':<30} {ny}")
+    print(f"    {'Wall grading':<30} 400× expansion to far-field")
+
+    # ── Airfoils ──────────────────────────────────────────────────────────────
+    ui.section("Airfoils in Study")
+    airfoils = [
+        ("NACA 0012", "0% camber,  12% thickness  — symmetric baseline"),
+        ("NACA 2412", "2% camber at 40% chord,  12% thickness  — light camber"),
+        ("NACA 4412", "4% camber at 40% chord,  12% thickness  — high camber"),
+    ]
+    for name, desc in airfoils:
+        print(f"    {ui._c(ui._Y, name)}  {desc}")
+
+    # ── Dataset status ────────────────────────────────────────────────────────
+    ui.section("Dataset Status")
+    if RESULTS_CSV.exists():
+        import csv as _csv
+        rows = list(_csv.DictReader(open(RESULTS_CSV)))
+        airfoil_counts: dict[str, dict] = {}
+        for r in rows:
+            af = r["airfoil"]
+            if af not in airfoil_counts:
+                airfoil_counts[af] = {"total": 0, "reliable": 0}
+            airfoil_counts[af]["total"] += 1
+            if not r.get("note", "").strip():
+                airfoil_counts[af]["reliable"] += 1
+        if airfoil_counts:
+            for af, counts in sorted(airfoil_counts.items()):
+                print(f"    {_display(af):<12}  {counts['reliable']:>2} reliable  /  {counts['total']:>2} total data points")
+        else:
+            print("    No results yet.")
+    else:
+        print("    Results CSV not found.")
+
+    # ── Paths ─────────────────────────────────────────────────────────────────
+    ui.section("File Locations")
+    print(f"    {'Cases directory':<30} {CASES_DIR}")
+    print(f"    {'STL files':<30} {CUSTOM_AIRFOILS_DIR}")
+    print(f"    {'Results CSV':<30} {RESULTS_CSV}")
+    print(f"    {'Mesh config':<30} {RESEARCH_MESH_CONFIG}")
+
+    # ── Git ───────────────────────────────────────────────────────────────────
+    ui.section("Repository")
+    try:
+        import subprocess as _sp
+        branch = _sp.check_output(
+            ["git", "-C", str(SCRIPTS_DIR), "rev-parse", "--abbrev-ref", "HEAD"],
+            text=True, stderr=_sp.DEVNULL).strip()
+        commit = _sp.check_output(
+            ["git", "-C", str(SCRIPTS_DIR), "log", "-1", "--format=%h  %s"],
+            text=True, stderr=_sp.DEVNULL).strip()
+        print(f"    {'Branch':<30} {branch}")
+        print(f"    {'Last commit':<30} {commit}")
+    except Exception:
+        print("    (git info unavailable)")
+
+    print()
+    input(f"  {ui._c(ui._C, 'Press Enter to return')} ")
+
+
+# ===========================================================================
 # Main entry point
 # ===========================================================================
 
@@ -943,17 +1057,20 @@ def main():
         print()
         print(f"  {ui._c(ui._Y, 'A')}) Research Mode       — NACA 0012 / 2412 / 4412")
         print(f"  {ui._c(ui._Y, 'B')}) Custom Mesh Mode    — SolidWorks STL import & CFD")
+        print(f"  {ui._c(ui._Y, 'I')}) Project Information — physics, solver, mesh, dataset status")
         print(f"  {ui._c(ui._Y, 'C')}) Exit")
         choice = input(f"  {ui._c(ui._C, 'Select')}: ").strip().upper()
         if choice == "A":
             menu_foam_research()
         elif choice == "B":
             menu_custom_mesh()
+        elif choice == "I":
+            task_project_info()
         elif choice == "C":
             ui.info("Goodbye.")
             break
         else:
-            ui.warn("Enter A, B, or C.")
+            ui.warn("Enter A, B, I, or C.")
 
 
 if __name__ == "__main__":
