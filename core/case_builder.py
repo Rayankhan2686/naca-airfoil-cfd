@@ -219,7 +219,7 @@ boundaryField
     }}
     {airfoil_patch}
     {{
-        type            nutkWallFunction;
+        type            nutUSpaldingWallFunction;
         value           uniform 0;
     }}
     front
