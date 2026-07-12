@@ -1,24 +1,24 @@
 {
   "current": {
-    "nx": 100,
-    "ny": 80,
+    "nx": 200,
+    "ny": 150,
     "nz": 1,
     "inlet": 20,
     "outlet": 30,
     "top_bottom": 10,
-    "refine_min": 0,
-    "refine_max": 0,
-    "end_time": 3000
+    "refine_min": 2,
+    "refine_max": 3,
+    "end_time": 5000
   },
   "last_known_good": {
-    "nx": 100,
-    "ny": 80,
+    "nx": 200,
+    "ny": 150,
     "nz": 1,
     "inlet": 20,
     "outlet": 30,
     "top_bottom": 10,
-    "refine_min": 0,
-    "refine_max": 0,
-    "end_time": 3000
+    "refine_min": 2,
+    "refine_max": 3,
+    "end_time": 5000
   }
 }

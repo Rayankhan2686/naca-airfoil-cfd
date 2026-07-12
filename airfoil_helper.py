@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-airfoil_helper.py
+foam_helper.py
 =================
 File browser and NACA 4-digit STL generator for the 2D OpenFOAM pipeline.
 

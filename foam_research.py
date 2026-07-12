@@ -558,14 +558,52 @@ def task_mesh_stats():
 _CASE_ROOTS = [CASES_DIR, Path.home() / "OpenFOAM" / "run"]
 
 
+def _decode_case_label(dirname: str) -> tuple[str, float] | None:
+    """Parse nacaXXXX_ap/_am naming into (NACAXXXX, alpha). Returns None if unrecognised."""
+    import re
+    m = re.fullmatch(r"(naca\d+)_(ap|am)(\d+)_(\d+)", dirname)
+    if not m:
+        return None
+    naca_raw, sign, integer, frac = m.groups()
+    alpha = float(f"{integer}.{frac}")
+    if sign == "am":
+        alpha = -alpha
+    return naca_raw.upper(), alpha
+
+
+def _case_display_name(path: Path) -> str:
+    """Return a human-readable label like 'NACA0012 (12°)' or the raw dirname."""
+    decoded = _decode_case_label(path.name)
+    if decoded is None:
+        return path.name
+    naca, alpha = decoded
+    val = int(alpha) if alpha == int(alpha) else alpha
+    return f"{naca} ({val}°)"
+
+
+_EXCLUDED_PROFILES = {"naca2412"}
+
+
 def _find_cases() -> list[Path]:
     cases = []
     for root in _CASE_ROOTS:
         if root.exists():
             for entry in sorted(root.iterdir()):
-                if entry.is_dir() and (entry / "constant" / "polyMesh").exists():
-                    cases.append(entry)
-    return cases
+                if not entry.is_dir() or not (entry / "constant" / "polyMesh").exists():
+                    continue
+                decoded = _decode_case_label(entry.name)
+                if decoded and decoded[0].lower() in _EXCLUDED_PROFILES:
+                    continue
+                cases.append(entry)
+
+    def sort_key(p: Path):
+        decoded = _decode_case_label(p.name)
+        if decoded:
+            naca, alpha = decoded
+            return (0, naca, alpha)
+        return (1, p.name, 0.0)
+
+    return sorted(cases, key=sort_key)
 
 
 def task_visualize_paraview():
@@ -576,8 +614,16 @@ def task_visualize_paraview():
         ui.warn("No completed case directories found. Run a simulation first.")
         return
 
+    prev_naca = None
     for i, c in enumerate(cases, 1):
-        print(f"    {i}) {c.name}  ({c.parent.name}/)")
+        label = _case_display_name(c)
+        decoded = _decode_case_label(c.name)
+        if decoded:
+            naca = decoded[0]
+            if naca != prev_naca:
+                print(f"\n  --- {naca} ---")
+                prev_naca = naca
+        print(f"    {i}) {label}")
     print(f"    0) Back")
 
     while True:
@@ -594,11 +640,18 @@ def task_visualize_paraview():
         pass
     ui.success(f"Created {foam_file}")
 
-    ui.info(f"Launching ParaView for {case_path.name} …")
+    import os
+    env = os.environ.copy()
+    if "DISPLAY" not in env:
+        env["DISPLAY"] = ":0"
+    env["LIBGL_ALWAYS_SOFTWARE"] = "1"      # force software rendering — required on WSLg
+    env["MESA_GL_VERSION_OVERRIDE"] = "4.5" # advertise GL 4.5 so ParaView's pipeline loads
+
+    ui.info(f"Launching ParaView for {_case_display_name(case_path)} …")
+    ui.info("ParaView is opening in the background — may take 30–60 s on first load.")
     try:
-        result = subprocess.run(["paraview", str(foam_file)], timeout=None)
-        if result.returncode != 0:
-            ui.warn(f"ParaView exited with code {result.returncode}.")
+        subprocess.Popen(["paraview", str(foam_file)], env=env)
+        ui.success("ParaView launched.")
     except FileNotFoundError:
         ui.error("ParaView is not installed.")
         ui.info("Install it with:  sudo apt install paraview")
