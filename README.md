@@ -1,7 +1,7 @@
 # NACA Airfoil CFD Research Tool
 
 **Developer:** Rayan Khan | sleepyheadron2686  
-**Institution:** [Your University Name]  
+**Institution:** Rutgers University
 **Course:** Aerodynamics / Fluid Mechanics Research  
 **Year:** 2026  
 
