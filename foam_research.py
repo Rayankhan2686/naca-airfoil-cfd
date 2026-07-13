@@ -77,7 +77,10 @@ def _display(key: str) -> str:
 # ---------------------------------------------------------------------------
 # Option 6 — Research mesh configuration
 # ---------------------------------------------------------------------------
-_MESH_DEFAULTS = {"nx": 200, "ny": 150}
+# Fine tier (~120k cells) per the 2026-07-12 mesh independence study.
+# Old "medium" default (~60k cells, not converged even for attached flow
+# Cd) was nx=200, ny=150 - kept here for reference.
+_MESH_DEFAULTS = {"nx": 283, "ny": 212}
 
 
 def _load_research_mesh_config() -> dict:
@@ -86,8 +89,8 @@ def _load_research_mesh_config() -> dict:
         with open(RESEARCH_MESH_CONFIG) as f:
             data = json.load(f)
         return {
-            "nx": max(100, min(500, int(data.get("nx", 200)))),
-            "ny": max(80,  min(400, int(data.get("ny", 150)))),
+            "nx": max(100, min(500, int(data.get("nx", 283)))),
+            "ny": max(80,  min(400, int(data.get("ny", 212)))),
         }
     except (FileNotFoundError, json.JSONDecodeError, ValueError):
         return dict(_MESH_DEFAULTS)
@@ -117,7 +120,7 @@ def task_mesh_settings():
         print()
         print("    1) Change X cells (streamwise/chordwise)  [100–500]")
         print("    2) Change Y cells (normal to flow)         [80–400]")
-        print("    3) Reset to publication defaults (200 × 150)")
+        print("    3) Reset to publication defaults (283 × 212)")
         print("    0) Back")
         print()
 
@@ -144,7 +147,7 @@ def task_mesh_settings():
         elif choice == "3":
             cfg = dict(_MESH_DEFAULTS)
             _save_research_mesh_config(cfg)
-            ui.success("Reset to publication defaults: 200 × 150")
+            ui.success("Reset to publication defaults: 283 × 212")
 
         elif choice == "0":
             break
@@ -1033,8 +1036,8 @@ def task_project_info():
         import json
         with open(RESEARCH_MESH_CONFIG) as f:
             cfg = json.load(f)
-    nx = cfg.get("nx", 200)
-    ny = cfg.get("ny", 150)
+    nx = cfg.get("nx", 283)
+    ny = cfg.get("ny", 212)
     print(f"    {'Topology':<30} Structured C-mesh  (no snappyHexMesh)")
     print(f"    {'Far-field radius':<30} R = 20 m  (20 chord lengths)")
     print(f"    {'Wake extension':<30} x = 40 m  (40 chord lengths)")

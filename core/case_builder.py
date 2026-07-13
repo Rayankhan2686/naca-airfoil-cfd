@@ -337,7 +337,7 @@ boundary
 
 
 def _build_block_mesh_cmesh(airfoil_patch: str, stl_name: str,
-                            nx: int = 200, ny: int = 150) -> str:
+                            nx: int = 283, ny: int = 212) -> str:
     """
     C-mesh blockMeshDict using the blockMesh project feature.
     Produces a true 2D mesh (1 cell in z, no snappyHexMesh z-splitting).
@@ -349,6 +349,16 @@ def _build_block_mesh_cmesh(airfoil_patch: str, stl_name: str,
     nx = total chordwise cells (distributed proportionally across the 3 sections).
     ny = normal cells (from airfoil surface to far-field arc).
     Z is always 1 (2D empty direction, locked).
+
+    Defaults are the "fine" tier (~120k cells) from the 2026-07-12 mesh
+    independence study: attached-flow (alpha=5) Cl/Cd changed <1%/3.6% going
+    medium(200x150,~60k)->fine, vs. medium's own 2-5% change from coarse -
+    fine is the first tier where Cl is clearly converged. The old default,
+    medium (nx=200, ny=150, ~60k cells), is kept here for reference/rollback:
+        nx: int = 200, ny: int = 150
+    Near-stall (alpha=9) is NOT converged even at fine - see debug_notes.md
+    for the extra-fine/ultra-fine follow-up and the proposed convergence-based
+    reliability flag.
     """
     R        = 20.0
     xS       = 0.3
@@ -870,7 +880,7 @@ simpleCoeffs
 # ---------------------------------------------------------------------------
 
 def build_case(case_dir: str, airfoil: str, alpha_deg: float, stl_src: str | None = None,
-               nx: int = 200, ny: int = 150,
+               nx: int = 283, ny: int = 212,  # fine tier; old default was nx=200, ny=150
                relax_U: float = 0.3, relax_p: float = 0.2,
                n_iter: int = 3000):
     """
