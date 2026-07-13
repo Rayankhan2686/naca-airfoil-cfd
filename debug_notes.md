@@ -808,3 +808,110 @@ steps = [
 ]
 ```
 (Remove `surfaceFeatureExtract` and `snappyHexMesh -overwrite` entries.)
+
+---
+
+# 9. Mesh Independence Study & Near-Stall Non-Convergence (2026-07-12)
+
+## 9.1 Setup
+
+5 mesh tiers, all NACA0012, all aspect-ratio-preserving scalings of the C-mesh
+(nx,ny scaled together, not independently) around the then-current default
+(nx=200, ny=150, "medium", ~60k cells):
+
+| tier | nx | ny | cells (checkMesh) | scale vs. medium |
+|---|---|---|---|---|
+| coarse | 141 | 106 | 29,892 | 0.5x |
+| medium | 200 | 150 | 60,000 | 1x (old default) |
+| fine | 283 | 212 | 119,992 | 2x |
+| extra-fine | 400 | 300 | 240,000 | 4x |
+
+Run at alpha=5° (attached flow) and alpha=9° (near stall / near CLmax for
+this airfoil at Re=2e5). Data: `results/mesh_independence.csv`.
+
+## 9.2 alpha=5° (attached flow) — converges normally
+
+| step | Cl | Cd |
+|---|---|---|
+| coarse->medium | -2.15% | -4.71% |
+| medium->fine | **+0.25%** | -3.56% |
+
+Cl is converged at the fine tier. Cd is still moving ~3.6% medium->fine —
+not fully converged, but shrinking, well-behaved, monotonic. No sign of a
+deeper problem here. This is why the production default moved to fine
+(nx=283, ny=212) — see the `feat:` commit updating case_builder.py defaults.
+
+## 9.3 alpha=9° (near stall) — genuinely non-convergent, NOT slow convergence
+
+| step | Cl | Cd | Cm |
+|---|---|---|---|
+| coarse->medium | +51.6% | +130.6% | sign flip (+ -> -) |
+| medium->fine | +11.4% | -26.6% | sign flip (- -> -, but -0.159 -> -0.040, not shrinking toward 0 monotonically) |
+| fine->extra-fine | **-8.35%** | **-29.5%** | sign flip (- -> +) |
+
+**This is the key result.** If this were slow convergence, every row's %
+change should keep the same sign and shrink in magnitude as the mesh gets
+finer. Instead:
+- Cl changes sign of its *trend* between steps (+51% -> +11% -> **-8%**) —
+  it overshoots and comes back down, it doesn't monotonically approach a
+  limit.
+- Cd's magnitude does NOT shrink: -26.6% (medium->fine) vs. **-29.5%**
+  (fine->extra-fine) — going from 120k to 240k cells changed Cd by *more*
+  than going from 60k to 120k did. Quadrupling the resolution from the old
+  default made no progress on Cd at all.
+- Cm flips sign three times across four tiers (+0.0085 -> -0.1591 ->
+  -0.0404 -> +0.0068) with no visible trend.
+
+**Conclusion: alpha=9° is a mesh-sensitive / bistable steady-RANS solution,
+not a case that "just needs a finer mesh."** Stopped here per plan (evidence
+is already unambiguous — an ultra-fine, ~480k-cell tier was not run, since
+the fine->extra-fine step already shows the same-magnitude oscillation
+pattern that would justify skipping further refinement). Most likely
+explanation: alpha=9° sits at/near this airfoil's actual stall point at this
+Re, where the real flow is physically unsteady (periodic separation /
+vortex shedding). A steady-state solver has no true steady solution to
+converge to there; whatever fixed point it lands on is an artifact of that
+particular mesh's truncation error, which is why it moves around
+unpredictably as the mesh changes instead of converging to a limit.
+
+## 9.4 Proposed reliability flag (NOT implemented yet — proposal only)
+
+Current `results/airfoil_results.csv` flags rows `post-stall-unreliable` only
+by a fixed alpha cutoff (>=12° for NACA0012 in the existing dataset). Section
+9.3 shows this is too permissive: alpha=9° looks perfectly smooth (converged
+solver residuals, no divergence) but is not mesh-independent at all — the
+current fixed-cutoff approach would report it as good data.
+
+**Proposed criterion:** flag any (airfoil, alpha) row as unreliable based on
+the *mesh-independence delta* at that specific alpha, not a hardcoded angle
+threshold:
+
+```
+flag row as "mesh-unreliable" if:
+    |ΔCl(medium->fine)| > T_Cl   OR   |ΔCd(medium->fine)| > T_Cd
+```
+
+where `T_Cl`, `T_Cd` are percent thresholds (candidates: 2-3%, per the
+1-2% "adequately converged" bar used in this study, with some margin).
+Reference points from this study to calibrate the threshold:
+  - alpha=5 (should NOT be flagged): ΔCl=+0.25%, ΔCd=-3.56%
+  - alpha=9 (SHOULD be flagged): ΔCl=+11.4%, ΔCd=-26.6%
+
+A single fixed-alpha cutoff can't distinguish these because the mesh
+sensitivity is airfoil- and alpha-specific (it's tied to how close that
+point is to the actual stall/separation onset, which shifts with camber —
+compare NACA0012 vs NACA2412's different stall behavior in
+`results/airfoil_results.csv`), not a universal angle.
+
+**Practical implementation note:** this requires running the medium/fine
+pair (or fine/extra-fine, if fine is adopted as the new "medium" baseline
+now that the default moved to 283x212) for every alpha in a production
+sweep, not just spot checks — i.e., every angle would need its own 2-tier
+mesh check to compute ΔCl/ΔCd before being trusted. That's a real cost
+(roughly doubles the compute per angle) worth weighing against just
+manually widening the fixed cutoff (e.g. dropping it to alpha>=8 based on
+this one data point) as a cheaper, cruder interim fix.
+
+Exact threshold (T_Cl, T_Cd) left for a follow-up decision once more alphas
+are spot-checked this way — 9.3's numbers are illustrative, not a full
+calibration.
