@@ -915,3 +915,59 @@ this one data point) as a cheaper, cruder interim fix.
 Exact threshold (T_Cl, T_Cd) left for a follow-up decision once more alphas
 are spot-checked this way — 9.3's numbers are illustrative, not a full
 calibration.
+
+## 9.5 pimpleFoam investigation at alpha=9 — PAUSED, not resolved (2026-07-13)
+
+**Goal:** determine whether NACA0012 alpha=9's non-convergence (9.3) is genuine
+physical unsteadiness (periodic vortex shedding near stall, which steady
+simpleFoam cannot represent) or a numerics artifact of the steady solver
+setup, by switching to unsteady pimpleFoam and checking whether Cl/Cd settle
+into stable periodic oscillation.
+
+**What was tried:** pimpleFoam at alpha=9, both at the fine tier (120k cells)
+and the medium tier (60k cells), same wall functions/physics as the steady
+pipeline, backward ddtScheme, 3 PIMPLE outer correctors, started from a
+uniform freestream IC. Both attempts **diverged** (floating-point exception
+in the GAMG pressure solve) before completing even one flow-through time.
+The medium-tier attempt's crash followed an adjustTimeStep overshoot (Courant
+spiked to 500-960 after `maxCo` was raised from 50 to 150 to speed up an
+impractically slow run) that the solver never recovered from even after
+`maxCo` was reverted back down.
+
+**Root cause NOT conclusively determined.** Two live hypotheses, not
+distinguished:
+  1. The flow at alpha=9 is genuinely unsteady/separated in a way that
+     needs a more careful transient setup (e.g. more outer correctors,
+     smaller Courant ceiling held constant throughout rather than adjusted
+     up, a gentler/ramped initial condition instead of an impulsive uniform
+     start) to integrate stably — i.e. a solver-robustness problem, fixable.
+  2. The flow is bistable/violently transient in a way that makes ANY
+     steady-start unsteady RANS integration fragile here regardless of
+     solver settings — i.e. a genuine physics finding in its own right.
+
+**Decision:** stop investigating for now rather than keep spending time
+narrowing this down. This is explicitly an **open question**, not a settled
+one - revisit if/when it becomes necessary (e.g. if the placeholder flag
+below turns out to be materially wrong once real data exists to check it
+against, or if the same non-convergence pattern shows up on NACA2412/4412
+and a real answer becomes worth the cost).
+
+## 9.6 Interim reliability flag adopted for NACA0012 (placeholder, not physics-based)
+
+Per 9.4's cheaper-fallback option, and since 9.5 didn't produce a real
+answer: **NACA0012 rows with alpha >= 8 are now flagged
+`near-stall-unreliable-placeholder`** in `results/airfoil_results.csv`
+(distinct from the `post-stall-unreliable` / `diverged-unreliable` labels
+`auto_flag_airfoil()` assigns algorithmically - those still apply on top of
+this if they separately fire, e.g. for a genuine solver divergence or
+branch-jump at some alpha >= 8).
+
+**This is explicitly a conservative placeholder, not a physics-based
+determination.** It is based on exactly one mesh-independence data point
+(alpha=9 not converged, 9.3) generalized to a round-number cutoff (alpha>=8),
+not on a per-alpha delta calculation. The true unreliable band could be
+narrower (e.g. only 8.5-11 is actually bad) or wider (e.g. 7 or 7.5 might
+also be borderline) - this has not been checked. It should be re-examined
+per airfoil once NACA2412/4412 data exists, since stall angle (and therefore
+where mesh/RANS reliability breaks down) shifts with camber - the cutoff
+that's reasonable for NACA0012 is not automatically right for 2412 or 4412.
