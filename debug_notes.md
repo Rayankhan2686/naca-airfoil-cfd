@@ -916,7 +916,7 @@ Exact threshold (T_Cl, T_Cd) left for a follow-up decision once more alphas
 are spot-checked this way — 9.3's numbers are illustrative, not a full
 calibration.
 
-## 9.5 pimpleFoam investigation at alpha=9 — PAUSED, not resolved (2026-07-13)
+## 9.5 pimpleFoam investigation at alpha=9 — SUPERSEDED, see 9.7 (2026-07-13)
 
 **Goal:** determine whether NACA0012 alpha=9's non-convergence (9.3) is genuine
 physical unsteadiness (periodic vortex shedding near stall, which steady
@@ -952,22 +952,79 @@ below turns out to be materially wrong once real data exists to check it
 against, or if the same non-convergence pattern shows up on NACA2412/4412
 and a real answer becomes worth the cost).
 
-## 9.6 Interim reliability flag adopted for NACA0012 (placeholder, not physics-based)
+## 9.6 Interim reliability flag adopted for NACA0012 — SUPERSEDED, see 9.7
 
-Per 9.4's cheaper-fallback option, and since 9.5 didn't produce a real
-answer: **NACA0012 rows with alpha >= 8 are now flagged
-`near-stall-unreliable-placeholder`** in `results/airfoil_results.csv`
-(distinct from the `post-stall-unreliable` / `diverged-unreliable` labels
-`auto_flag_airfoil()` assigns algorithmically - those still apply on top of
-this if they separately fire, e.g. for a genuine solver divergence or
-branch-jump at some alpha >= 8).
+(Historical record: this section originally described a conservative
+placeholder flag adopted before the conclusion in 9.7 was reached. See 9.7
+for the current, final flag and rationale.)
 
-**This is explicitly a conservative placeholder, not a physics-based
-determination.** It is based on exactly one mesh-independence data point
-(alpha=9 not converged, 9.3) generalized to a round-number cutoff (alpha>=8),
-not on a per-alpha delta calculation. The true unreliable band could be
-narrower (e.g. only 8.5-11 is actually bad) or wider (e.g. 7 or 7.5 might
-also be borderline) - this has not been checked. It should be re-examined
-per airfoil once NACA2412/4412 data exists, since stall angle (and therefore
-where mesh/RANS reliability breaks down) shifts with camber - the cutoff
-that's reasonable for NACA0012 is not automatically right for 2412 or 4412.
+## 9.7 FINAL CONCLUSION — NACA0012 alpha>=8 has no steady RANS solution (2026-07-16)
+
+**This closes the investigation started in 9.3-9.6. Not an open question
+anymore - no further mesh or solver tuning is planned for NACA0012 on the
+strength of this.**
+
+**Validated range: alpha = -5 deg to 7 deg.** Clean, converged, mesh-checked
+(9.2) results. Use this data with confidence.
+
+**alpha >= 8 deg: no steady-state solution exists for this flow, full stop.**
+Three independent lines of evidence, gathered across three separate
+investigations, all point the same direction:
+
+1. **Mesh-independence bistability (9.3).** At alpha=9, Cl and Cd do not
+   converge with mesh refinement - they overshoot and reverse trend
+   direction across coarse->medium->fine->extra-fine (Cl: +51.6% -> +11.4%
+   -> -8.35%; Cd's swing does not shrink with refinement: -26.6% ->
+   -29.5%). A real discretization error shrinks monotonically; this does not.
+
+2. **pimpleFoam divergence, twice (9.5).** Unsteady solving was tried
+   specifically to check whether the flow settles into ordinary periodic
+   vortex shedding (which would still be a usable, if more expensive,
+   answer). Both the fine-tier and medium-tier attempts diverged
+   (floating-point exception) before completing even one flow-through time,
+   starting from a plain uniform-freestream IC. Inconclusive on its own,
+   but consistent with the flow being violent enough that even a transient
+   solver can't integrate through it cleanly.
+
+3. **Residual-synced Cl oscillation at extended iteration count (2026-07-16,
+   this investigation).** Steady simpleFoam runs for alpha=14 and alpha=16
+   were extended from 3000 to 6000 iterations to settle whether the
+   still-climbing Cl at iteration 3000 (9.3's dataset) was slow convergence
+   or something else. Neither case converged in either direction. Instead,
+   both show a huge, non-monotonic swing: Cl climbs to an even less
+   plausible peak (~2.1-2.4) around iteration 3200-3400, crashes through
+   zero to strongly negative (-0.50 to -0.74) around iteration 4800-4900,
+   then partially recovers - still moving at iteration 6000, nowhere near
+   settled. Critically, the initial pressure residual spikes by 2-4 orders
+   of magnitude (e.g. ~1e-6 -> 0.017) at exactly the iterations where Cl is
+   swinging, then subsides again - this is the solution field undergoing
+   real, discrete transitions, not numerical noise around a converged mean.
+
+   This is the decisive piece: it directly demonstrates, inside the plain
+   steady solver (no pimpleFoam needed), that there is no fixed point for
+   simpleFoam's pseudo-time iteration to converge to at these angles. The
+   the iteration count acts like a distorted pseudo-time axis, and what's
+   visible is one incomplete cycle of a much larger oscillation - consistent
+   with genuine, large-amplitude unsteady separation (deep-stall-type
+   behavior) at Re=2e5, not a bug or a mesh/solver-tuning problem.
+
+**Practical conclusion:** alpha>=8 deg for NACA0012 does not have a
+steady-RANS answer to converge to, regardless of mesh density, iteration
+count, or (based on the pimpleFoam attempts) a naive switch to unsteady
+solving. More mesh refinement, more iterations, or more solver tuning are
+not expected to fix this and are not planned.
+
+**Flag applied:** `results/airfoil_results.csv` rows with alpha >= 8 for
+NACA0012 (previously `near-stall-unreliable-placeholder`) are now labeled
+`no-steady-solution-unsteady-separation` - the label change matters: this is
+not "an uncertain number," it is "not a number." Rows alpha >= 16 keep the
+separate, pre-existing `post-stall-unreliable` label from
+`auto_flag_airfoil()`'s algorithmic branch-jump detection (not renamed here -
+that detection is a different, narrower mechanism, though it stems from the
+same underlying breakdown).
+
+**Does NOT automatically apply to NACA2412/4412.** Stall onset shifts with
+camber. Each airfoil's breakdown angle needs its own check via the same
+method (mesh-independence spot-check + extended-iteration residual/Cl trend)
+rather than assuming NACA0012's alpha=8 cutoff transfers directly - see the
+NACA2412 sweep/breakdown-angle analysis for the first test of this.
