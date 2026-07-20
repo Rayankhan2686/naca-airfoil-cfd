@@ -1028,3 +1028,90 @@ camber. Each airfoil's breakdown angle needs its own check via the same
 method (mesh-independence spot-check + extended-iteration residual/Cl trend)
 rather than assuming NACA0012's alpha=8 cutoff transfers directly - see the
 NACA2412 sweep/breakdown-angle analysis for the first test of this.
+
+---
+
+# 10. NACA2412 full sweep and breakdown-angle analysis (2026-07-19)
+
+## 10.1 Setup
+
+Full 30-angle sweep, alpha=-5 to 20 (1 deg steps, 0.5 deg steps 8.5-11.5),
+current finalized pipeline (fine-tier C-mesh ~120k cells,
+nutUSpaldingWallFunction, simpleFoam/kOmegaSST, Re=2e5) - identical settings
+to the NACA0012 dataset in section 9.7, so the two are directly comparable.
+30/30 succeeded, 0 failures. The prior 6 NACA2412 rows (alpha=-5..0) were
+deleted first and rerun as part of this sweep - confirmed via checkMesh that
+they'd been built on the old medium-tier mesh (60000 cells) despite already
+having the correct wall function, so were not valid to keep alongside a
+fine-tier dataset.
+
+## 10.2 Where the curve stops looking physically plausible
+
+Per-degree Cl slope (dCl/dalpha):
+
+| range | slope |
+|---|---|
+| alpha=-5 to 6 | ~0.095-0.115/deg, flat, normal attached-flow behavior |
+| alpha=7 -> 8 | 0.148/deg - first jump |
+| alpha=8 -> 11 | climbs further to ~0.25/deg at its peak (more than double baseline) |
+| alpha=14 -> 15 | first outright non-monotonic reversal (Cl drops), already caught by auto_flag_airfoil()'s post-stall-unreliable |
+
+The slope-acceleration onset lines up almost exactly with NACA0012's own
+breakdown signature (section 9.3), which also showed the pre-breakdown
+region as a flat, constant slope followed by a sudden increase rather than
+the slope easing off toward a real CLmax.
+
+## 10.3 Extended-iteration diagnostic (3000 -> 6000 iterations)
+
+Ran at alpha=8, 11, 14 (chosen to bracket the slope acceleration and the
+first non-monotonic jump). Results:
+
+| alpha | Cl @ 3000 (original) | Cl @ 6000 | trajectory |
+|---|---|---|---|
+| 8  | 0.926 | 0.779 | rises to a peak (~0.946, iter ~2400), then declines steadily, NOT plateaued at iter 6000 |
+| 11 | 1.615 | 0.00005 | rises to a peak (~1.81, iter ~3600), crashes through zero, ends essentially at zero, still moving |
+| 14 | 2.115 | 0.151  | rises to a peak (~2.18, iter ~3300), crashes through zero to negative (~-0.058), partially recovers |
+
+alpha=11 and alpha=14 show the unmistakable NACA0012 signature: large
+climb-crash-through-zero-partial-recovery, with the pressure residual
+spiking 2-4 orders of magnitude (e.g. alpha=14: ~1e-6 -> 0.015) exactly in
+sync with the Cl crash. **Confirmed genuine breakdown, not slow
+convergence**, same as NACA0012 section 9.3/9.7.
+
+alpha=8 is the one ambiguous case: Cl is clearly NOT converged (still
+declining ~16% off its peak with no plateau by iteration 6000), but unlike
+alpha=11/14 it has not (yet, within 6000 iterations) crashed through zero,
+and its residuals stay comparatively well-behaved (small, mostly
+decreasing, no late-stage spike). Read most plausibly as the *early stage*
+of the same breakdown on a slower timescale, rather than a separate,
+milder phenomenon - but this is inference, not as airtight as the
+alpha=11/14 evidence. Not independently confirmed via mesh-independence
+cross-check (which is how NACA0012's alpha=9 case was first nailed down in
+section 9.3) - a real gap if this boundary matters a lot later.
+
+## 10.4 Conclusion: NACA2412 breakdown angle
+
+**Validated range: alpha = -5 to 7 deg** (same bound as NACA0012, based on
+the same standard: flat/consistent Cl slope, no evidence tested to the
+contrary - alpha=7 itself was not independently extended-iteration-tested,
+same caveat that applied to NACA0012's alpha=7 boundary).
+
+**alpha >= 8 deg: flagged `no-steady-solution-unsteady-separation`**,
+matching NACA0012's convention and label exactly. Confirmed unambiguously
+for alpha=11 and 14; alpha=8 itself is flagged conservatively based on slope
+evidence + non-plateaued Cl trend, not as airtight as 11/14 - treat alpha=8
+specifically as "probably broken, not proven to the same standard" if this
+distinction ever matters. Rows alpha>=14 additionally carry the pre-existing
+algorithmic `post-stall-unreliable` label from `auto_flag_airfoil()`,
+unchanged, same treatment as NACA0012.
+
+**Comparison to NACA0012:** breakdown angle is the same, alpha>=8 for both
+airfoils, despite NACA2412's 2% camber. This is somewhat unexpected -
+classical thin-airfoil-theory intuition says camber shifts stall onset
+(usually earlier for this direction of camber), but that intuition is about
+*real* stall, and what's being measured here is not real stall - it's the
+angle where steady RANS stops having a solution to converge to at all. That
+breakdown may be governed more by Reynolds number, mesh, and turbulence
+model (no transition model, fully-turbulent kOmegaSST) common to both
+airfoils than by camber-specific aerodynamics. Should not be assumed to
+hold for NACA4412 (4% camber, double NACA2412's) without its own check.
