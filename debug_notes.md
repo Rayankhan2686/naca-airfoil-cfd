@@ -1089,7 +1089,93 @@ alpha=11/14 evidence. Not independently confirmed via mesh-independence
 cross-check (which is how NACA0012's alpha=9 case was first nailed down in
 section 9.3) - a real gap if this boundary matters a lot later.
 
-## 10.4 Conclusion: NACA2412 breakdown angle
+## 10.4 Turbulence-model decision: staying on kOmegaSST, no transition model (2026-07-23)
+
+**Decision made: all three airfoils (0012, 2412, 4412) stay on plain
+kOmegaSST with no laminar-turbulent transition model.** Not switching to
+kOmegaSSTLM or similar. NACA0012's dataset is unaffected by this section -
+no redo.
+
+**Root cause of the Cl-vs-XFOIL mismatch identified.** A dedicated
+diagnostic (mesh/y+ split upper-vs-lower, Cp distribution vs. a validated
+NeuralFoil/XFOIL reference, both at NACA2412 alpha=4) found:
+
+- y+ is asymmetric between surfaces (upper mean 4.91, lower mean 6.82) but
+  both stay inside the 1-13 range `nutUSpaldingWallFunction` handles
+  robustly - not the main driver.
+- Mesh quality is modestly worse than NACA0012 (58 vs 38 severely
+  non-orthogonal faces) and concentrated at the leading edge - a secondary
+  contributor at most.
+- **The Cp comparison is the decisive evidence.** The upper (suction)
+  surface is under-predicted almost everywhere, peaking at x/c~0.14-0.22
+  (|Cp error| up to 0.61) - just aft of the leading edge, in the region
+  where the suction peak should be transitioning into recovery. This is a
+  fully-turbulent boundary layer (no transition model) smearing out the
+  suction peak, and it is *much* more pronounced here than the mild,
+  symmetric slope deficit already known on NACA0012.
+
+**Why NACA2412 shows this so much more than NACA0012:** NACA0012 is
+symmetric with a comparatively weak, broad suction peak - the fully-turbulent
+assumption still smears it, but mildly, since there is not much peak to
+smear. NACA2412's camber produces a stronger, more concentrated suction
+peak, which the same fully-turbulent assumption under-resolves far more
+aggressively. **This bias should be expected to grow with camber**: more
+camber means a stronger, more concentrated suction peak for the model to
+under-resolve, not less. NACA4412 (4% camber, double NACA2412's) should be
+expected to show an even larger version of this same effect - this is a
+prediction to check once NACA4412 data exists, not just a possibility.
+
+**Implication for the write-up: any camber-vs-lift conclusion in the final
+analysis is a probable *underestimate* of the true camber effect, not an
+absolute measurement.** Since the suction-peak under-prediction gets worse
+as camber increases, the *relative* lift benefit of camber that this
+dataset shows is itself biased low relative to reality - the real
+aerodynamic benefit of camber is likely larger than what this pipeline will
+report. **This limitation must be stated plainly in the paper's
+methods/limitations section**, not left implicit in a data table footnote.
+
+## 10.5 Mesh-seam fix at the block-transition point (xS=0.3) (2026-07-23)
+
+**Independent of the turbulence-model decision above - a real, separate
+mesh-quality bug, now fixed.** The Cp diagnostic in 10.4 also turned up a
+sharp, localized anomaly on *both* surfaces at x/c~0.3, coincident with
+`xS=0.3` - the C-mesh's block-transition/arc-center point in
+`core/case_builder.py`'s `_build_block_mesh_cmesh()`.
+
+**Confirmed by direct measurement**, not just suspicion: parsed the actual
+generated mesh's surface-point spacing (not the code, the real
+`constant/polyMesh` output) approaching and leaving the xS seam on a built
+NACA2412 case. Found cell size growing smoothly from ~0.0052 to ~0.0084
+across the leading block (LE->xS) as designed, then **abruptly dropping to
+a flat 0.0066 for the entire length of the middle block (xS->TE)** - a
+~15-25% cell-size discontinuity right at the block face, on both upper and
+lower surfaces, at the exact x-station where the Cp anomaly showed up. Root
+cause: the middle block used `simpleGrading (1 1 {wG})` - chordwise ratio
+of exactly 1, i.e. perfectly uniform cells - which does not know or care
+what cell size the leading block arrives with.
+
+**Fix:** added a new grading parameter `mG = 1.3` and changed both middle
+blocks (upper and lower) from `simpleGrading (1 1 {wG})` to
+`simpleGrading ({mG} 1 {wG})`, so the middle block's cells start at roughly
+the leading block's ending size and taper down gradually across the block
+instead of resetting to uniform. This is an empirically-tuned value (I
+rebuilt a test mesh and re-measured the actual point spacing rather than
+trusting the grading math by hand, since the blocks are curved/projected
+onto the airfoil surface and hand-deriving exact cell sizes isn't
+reliable). **Verified fixed**: post-fix spacing goes 0.00838 -> 0.00799 ->
+0.00750 -> 0.00748 -> ... smoothly decreasing by a fraction of a percent
+per cell, no jump anywhere near the seam.
+
+**This changes the shared `_build_block_mesh_cmesh()` function, so it
+technically affects the mesh recipe for all three airfoils, not just
+NACA2412** (same xS=0.3 block topology is used for NACA0012 and NACA4412
+too). Per explicit instruction: NACA2412 gets rerun to reflect this fix;
+**NACA0012's already-finalized dataset is deliberately left as-is and NOT
+rerun**, even though the code it was generated from has since moved on
+slightly. If NACA0012 is ever revisited, note that its dataset predates
+this mesh-seam fix.
+
+## 10.6 Conclusion: NACA2412 breakdown angle
 
 **Validated range: alpha = -5 to 7 deg** (same bound as NACA0012, based on
 the same standard: flat/consistent Cl slope, no evidence tested to the

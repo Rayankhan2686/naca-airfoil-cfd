@@ -378,6 +378,15 @@ def _build_block_mesh_cmesh(airfoil_patch: str, stl_name: str,
     xUG = 5.0
     xDG = 10.0
     wG  = 400
+    # Middle block (xS->TE) chordwise grading. Was a flat 1 (uniform), which
+    # left an abrupt ~15-25% cell-size jump at the xS seam versus the leading
+    # block's graded cells arriving from the LE (measured directly on a built
+    # NACA2412 mesh: ~0.0075-0.0084 approaching the seam vs. a flat 0.0066
+    # right after it). mG continues that taper instead of resetting to
+    # uniform - direction is TE-end->xS-end per the hex vertex ordering below,
+    # so mG>1 makes the xS-end cell bigger (matching the leading block) and
+    # the TE-end cell smaller.
+    mG  = 1.3
 
     return f"""FoamFile
 {{
@@ -446,7 +455,7 @@ blocks
         1 1 1 1
         {wG} {wG} {wG} {wG}
     )
-    hex ( 5  7 19 17  1  0 12 13) ({xMC} 1 {nW}) simpleGrading (1 1 {wG})
+    hex ( 5  7 19 17  1  0 12 13) ({xMC} 1 {nW}) simpleGrading ({mG} 1 {wG})
     hex (17 18  6  5 13 14  2  1) ({xDC} 1 {nW}) simpleGrading ({xDG} 1 {wG})
     hex (20 16  4  8 21 15  3  9) ({xUC} 1 {nW})
     edgeGrading
@@ -455,7 +464,7 @@ blocks
         1 1 1 1
         {wG} {wG} {wG} {wG}
     )
-    hex (17 20  8  5 22 21  9 10) ({xMC} 1 {nW}) simpleGrading (1 1 {wG})
+    hex (17 20  8  5 22 21  9 10) ({xMC} 1 {nW}) simpleGrading ({mG} 1 {wG})
     hex ( 5  6 18 17 10 11 23 22) ({xDC} 1 {nW}) simpleGrading ({xDG} 1 {wG})
 );
 
