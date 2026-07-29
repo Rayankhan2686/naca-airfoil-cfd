@@ -19,6 +19,11 @@ from paraview.simple import (
     Show, Render, SaveScreenshot,
 )
 import paraview.simple as pv
+# Without this, ParaView auto-resets the camera to fit the WHOLE dataset on the
+# first Render() call after Show(), silently overriding any explicit camera
+# settings made beforehand - this was the actual cause of the "flat diamond"
+# renders (camera was ending up fit to the full ~60x40 domain, not the airfoil).
+pv._DisableFirstRenderCameraReset()
 
 SCRIPTS_DIR = Path(os.path.expanduser("~/OpenFOAM/scripts"))
 CASES_DIR = SCRIPTS_DIR / "cases"
@@ -53,7 +58,6 @@ def render_case(case_path: Path, out_png: Path, alpha: float):
     display = Show(reader, view)
     ColorBy(display, ("CELLS", "p"))
     display.SetRepresentationType("Surface")
-    display.RescaleTransferFunctionToDataRange(True)
 
     pLUT = GetColorTransferFunction("p")
     pLUT.ApplyPreset("Cool to Warm", True)
@@ -66,13 +70,23 @@ def render_case(case_path: Path, out_png: Path, alpha: float):
     bar.Position = [0.87, 0.1]
     bar.ScalarBarLength = 0.7
 
-    ResetCamera()
+    # Camera: looking down -z (span axis) at the x-y chord/thickness cross-section -
+    # this part was already correct. The bug was zoom: parallel scale of 2.5 shows
+    # ~5 chord-lengths vertically, so the 0.12c-thick airfoil occupied only ~2% of
+    # the frame (the "flat diamond" look). Tightened to frame ~1.8 chords vertically
+    # so the airfoil is actually recognizable.
     view.CameraParallelProjection = 1
     view.CameraPosition = [0.5, 0.0, 10.0]
     view.CameraFocalPoint = [0.5, 0.0, 0.0]
     view.CameraViewUp = [0.0, 1.0, 0.0]
-    view.CameraParallelScale = 2.5
+    view.CameraParallelScale = 0.9
 
+    Render()
+    # Rescale color range to what's actually visible post-zoom, not the raw
+    # full-domain data range (measured to be numerically the same here since the
+    # pressure extremes happen to sit near the airfoil anyway, but this is the
+    # more correct/robust call in general and costs nothing).
+    display.RescaleTransferFunctionToVisibleRange(view)
     Render()
     SaveScreenshot(str(out_png), view, ImageResolution=VIEW_SIZE,
                    TransparentBackground=0, CompressionLevel=6)
