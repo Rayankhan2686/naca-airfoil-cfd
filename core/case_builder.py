@@ -336,6 +336,76 @@ boundary
 """
 
 
+def _naca4_params(code: str) -> tuple[float, float, float] | None:
+    """
+    Parse (m, p, t) from a NACA 4-digit code such as 'naca0012' or '2412'.
+    Returns None for anything else (custom/non-NACA airfoil identifiers) so
+    callers can fall back to the generic project-based edge approach.
+    """
+    s = code.lower().strip()
+    if s.startswith("naca"):
+        s = s[4:]
+    if len(s) == 4 and s.isdigit():
+        return int(s[0]) / 100.0, int(s[1]) / 10.0, int(s[2:]) / 100.0
+    return None
+
+
+def _naca4_surface_point(x: float, m: float, p: float, t: float):
+    """
+    Analytical NACA4 (upper, lower) surface point at chord fraction x.
+    Same formulas as core/stl_generator.py's _naca4() - duplicated rather
+    than imported so Research Mode's mesh generation doesn't pick up a
+    cross-module dependency on the STL-writing module.
+    """
+    x = min(max(x, 0.0), 1.0)
+    yt = 5 * t * (0.2969 * math.sqrt(x) - 0.1260 * x - 0.3516 * x**2
+                  + 0.2843 * x**3 - 0.1015 * x**4)
+    if m == 0 or p == 0:
+        yc, dyc = 0.0, 0.0
+    elif x < p:
+        yc  = m / p**2 * (2 * p * x - x**2)
+        dyc = 2 * m / p**2 * (p - x)
+    else:
+        yc  = m / (1 - p)**2 * (1 - 2 * p + 2 * p * x - x**2)
+        dyc = 2 * m / (1 - p)**2 * (p - x)
+    theta = math.atan(dyc)
+    xu, yu = x - yt * math.sin(theta), yc + yt * math.cos(theta)
+    xl, yl = x + yt * math.sin(theta), yc - yt * math.cos(theta)
+    return (xu, yu), (xl, yl)
+
+
+def _naca4_polyline_points(m: float, p: float, t: float,
+                          x0: float, x1: float, surface: str, z: float,
+                          n_dense: int = 241) -> str:
+    """
+    OpenFOAM point-list literal for a polyLine edge tracing the analytical
+    NACA4 surface strictly between chord stations x0 and x1 (endpoints
+    excluded - those are the existing projected vertices at LE/xS/TE).
+
+    Sampled by cosine-spacing the FULL [0,1] chord (same distribution as
+    stl_generator.py) and keeping only the points landing in (x0, x1),
+    rather than cosine-spacing just this sub-range - point density then
+    reflects the real curvature (very dense at the LE cusp, dense at the TE
+    cusp, sparser mid-chord) instead of being diluted by treating each
+    sub-range as its own half-cosine.
+
+    This replaces the old `project (edge) (airfoil_patch)` approach, which
+    was found to cut straight across the chord between the LE/xS/TE anchor
+    vertices and then nearest-point-snap - undershooting the true convex
+    surface by up to 95% of thickness near the LE (see debug_notes.md).
+    """
+    pts = []
+    for i in range(n_dense):
+        beta = math.pi * i / (n_dense - 1)
+        x = 0.5 * (1 - math.cos(beta))
+        if not (x0 < x < x1):
+            continue
+        (xu, yu), (xl, yl) = _naca4_surface_point(x, m, p, t)
+        pts.append((xu, yu) if surface == "upper" else (xl, yl))
+    pts.sort(key=lambda pr: pr[0])
+    return "(" + " ".join(f"({px:.8f} {py:.8f} {z})" for px, py in pts) + ")"
+
+
 def _build_block_mesh_cmesh(airfoil_patch: str, stl_name: str,
                             nx: int = 283, ny: int = 212) -> str:
     """
@@ -387,6 +457,39 @@ def _build_block_mesh_cmesh(airfoil_patch: str, stl_name: str,
     # so mG>1 makes the xS-end cell bigger (matching the leading block) and
     # the TE-end cell smaller.
     mG  = 1.3
+
+    naca = _naca4_params(airfoil_patch)
+    if naca is not None:
+        m, p, t = naca
+        edges_block = f"""\
+    polyLine  4  7 {_naca4_polyline_points(m, p, t, 0.0, xS, "lower", 0.1)}
+    polyLine  7  5 {_naca4_polyline_points(m, p, t, xS, 1.0, "lower", 0.1)}
+    polyLine  4  8 {_naca4_polyline_points(m, p, t, 0.0, xS, "upper", 0.1)}
+    polyLine  8  5 {_naca4_polyline_points(m, p, t, xS, 1.0, "upper", 0.1)}
+    polyLine 16 19 {_naca4_polyline_points(m, p, t, 0.0, xS, "lower", 0.0)}
+    polyLine 19 17 {_naca4_polyline_points(m, p, t, xS, 1.0, "lower", 0.0)}
+    polyLine 16 20 {_naca4_polyline_points(m, p, t, 0.0, xS, "upper", 0.0)}
+    polyLine 20 17 {_naca4_polyline_points(m, p, t, xS, 1.0, "upper", 0.0)}
+    project  3  0 (inlet_arc)
+    project  3  9 (inlet_arc)
+    project 15 12 (inlet_arc)
+    project 15 21 (inlet_arc)"""
+    else:
+        # Non-NACA custom airfoil identifier: keep the original project-based
+        # edges (no analytical formula available to sample from).
+        edges_block = f"""\
+    project  4  7 ({airfoil_patch})
+    project  7  5 ({airfoil_patch})
+    project  4  8 ({airfoil_patch})
+    project  8  5 ({airfoil_patch})
+    project 16 19 ({airfoil_patch})
+    project 19 17 ({airfoil_patch})
+    project 16 20 ({airfoil_patch})
+    project 20 17 ({airfoil_patch})
+    project  3  0 (inlet_arc)
+    project  3  9 (inlet_arc)
+    project 15 12 (inlet_arc)
+    project 15 21 (inlet_arc)"""
 
     return f"""FoamFile
 {{
@@ -470,18 +573,7 @@ blocks
 
 edges
 (
-    project  4  7 ({airfoil_patch})
-    project  7  5 ({airfoil_patch})
-    project  4  8 ({airfoil_patch})
-    project  8  5 ({airfoil_patch})
-    project 16 19 ({airfoil_patch})
-    project 19 17 ({airfoil_patch})
-    project 16 20 ({airfoil_patch})
-    project 20 17 ({airfoil_patch})
-    project  3  0 (inlet_arc)
-    project  3  9 (inlet_arc)
-    project 15 12 (inlet_arc)
-    project 15 21 (inlet_arc)
+{edges_block}
 );
 
 boundary
