@@ -57,7 +57,6 @@ def render_case(case_path: Path, out_png: Path, alpha: float):
 
     display = Show(reader, view)
     ColorBy(display, ("CELLS", "p"))
-    display.SetRepresentationType("Surface")
 
     pLUT = GetColorTransferFunction("p")
     pLUT.ApplyPreset("Cool to Warm", True)
@@ -80,6 +79,16 @@ def render_case(case_path: Path, out_png: Path, alpha: float):
     view.CameraFocalPoint = [0.5, 0.0, 0.0]
     view.CameraViewUp = [0.0, 1.0, 0.0]
     view.CameraParallelScale = 0.9
+
+    # Set (and verify) Surface representation as the LAST thing done to the
+    # display before rendering - guards against ParaView ever picking up
+    # "Surface LIC" or another representation from prior/persisted session
+    # state, which renders as a dense streaky texture with no visible error
+    # in a headless batch run. Fail loudly instead of silently.
+    display.SetRepresentationType("Surface")
+    assert display.Representation == "Surface", (
+        f"Expected Surface representation, got {display.Representation!r}"
+    )
 
     Render()
     # Rescale color range to what's actually visible post-zoom, not the raw
