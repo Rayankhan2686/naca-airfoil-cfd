@@ -1201,3 +1201,173 @@ breakdown may be governed more by Reynolds number, mesh, and turbulence
 model (no transition model, fully-turbulent kOmegaSST) common to both
 airfoils than by camber-specific aerodynamics. Should not be assumed to
 hold for NACA4412 (4% camber, double NACA2412's) without its own check.
+
+---
+
+## 11. Airfoil-surface geometry bug: `project`-edge undershoot, polyLine fix,
+## full NACA0012 redo (2026-08-03)
+
+**Everything in section 9 (NACA0012) and section 10 (NACA2412) above was run
+on an incorrect airfoil shape.** This section documents the bug, the fix,
+and the full NACA0012 redo. NACA2412's redo is a separate, later phase.
+
+### 11.1 The bug
+
+The rendered NACA0012 pressure plots looked like a faceted diamond, not a
+smooth aerofoil, even after fixing an unrelated ParaView camera-reset
+rendering bug. Pulling the actual airfoil-patch points directly out of a
+solved case's `constant/polyMesh` (not the STL - the real simulation mesh)
+and comparing against the analytical `yt(x)` formula confirmed this was a
+real geometry bug, not a rendering artifact: thickness error reached -95%
+near the leading edge, was exactly 0% at the single vertex explicitly
+projected at x=0.3, and ran -30% to -40% through mid-aft chord.
+
+Root cause: `_build_block_mesh_cmesh()`'s airfoil-surface edges used
+`project (edge) (airfoil_patch)` between three anchor vertices (LE, x=0.3,
+TE). blockMesh's edge-projection does not trace the true curve between
+those anchors - it interpolates a straight line then nearest-point-snaps
+onto the STL, which undershoots a convex airfoil surface everywhere except
+exactly at the anchors. Every simulation in this project prior to this
+section (both airfoils, full sweeps, mesh independence, near-stall
+diagnostics, XFOIL/NeuralFoil comparisons) used this wrong shape.
+
+### 11.2 The fix
+
+Replaced the 8 buggy `project`-edges (LE<->x=0.3<->TE, both z-planes) with
+explicit `polyLine` edges built from densely-sampled analytical NACA4
+points (cosine-spaced over the full chord, ~0.5-0.9% chord spacing
+mid-chord, far denser at the LE/TE cusps) - see `_naca4_params`,
+`_naca4_surface_point`, `_naca4_polyline_points` in `core/case_builder.py`.
+Falls back to the old project-edge behavior for any non-NACA4 airfoil
+identifier (Custom Mesh Mode / `core/custommesh_builder.py` untouched).
+
+Verified by rebuilding a NACA0012 test case and re-pulling actual
+`constant/polyMesh` patch points: mean thickness error across all 353
+patch points dropped to 0.32%, and the old worst region (x in [0,0.3])
+dropped to a 0.10% mean / 4.9% max - the only points over 1% error are the
+TE vertex (compares against the NACA4 thickness formula's known nonzero
+value at x=1; both old and new meshes force-close the TE to exactly (1,0),
+unaffected by this fix) and the two points nearest the LE (absolute error
+~1e-4, inflated in percentage terms by tiny local thickness). checkMesh
+clean, same 354-face patch topology as before.
+
+### 11.3 Effect on Cl/Cd: geometry bug vs. turbulence model
+
+Comparing old (buggy-geometry) vs. new (corrected) at the two angles that
+happened to be sampled early in the redo:
+
+| alpha | Cl (old) | Cl (new) | Cl (XFOIL) | Cd (old) | Cd (new) | Cd (XFOIL) |
+|---|---|---|---|---|---|---|
+| 0 | ~0 | ~0 | 0.000 | 0.0178 | 0.0233 | 0.0102 |
+| 4 | 0.395 | 0.388 | 0.536 | 0.0274 | 0.0253 | 0.0118 |
+
+Cl is essentially unchanged (arguably fractionally worse) and Cd improved
+only modestly at alpha=4, got *worse* at alpha=0. This is expected in
+hindsight: NACA0012 is symmetric, so a thickness-undershoot bug does not
+strongly bias lift the way it would for a cambered section. This means the
+Cl-vs-XFOIL gap documented in section 10.4 (attributed to the fully-
+turbulent kOmegaSST boundary layer smearing the suction peak, no
+transition model) is probably still the right explanation for NACA0012,
+and is NOT invalidated by this geometry fix. Whether the geometry bug
+explains more of NACA2412's camber-related Cl gap is the open question for
+the Phase 4 redo (cambered sections have nonzero yc, so the old bug's
+undershoot was NOT symmetric top/bottom there).
+
+### 11.4 Mesh independence on the corrected geometry - fine tier no longer clearly adequate
+
+Re-ran coarse/medium/fine/extra-fine at alpha=5,9 on the corrected shape:
+
+| alpha | tier | nx | ny | Cl | Cd |
+|---|---|---|---|---|---|
+| 5 | coarse | 141 | 106 | 0.5432 | 0.02779 |
+| 5 | medium | 200 | 150 | 0.5156 | 0.02688 |
+| 5 | fine | 283 | 212 | 0.4731 | 0.02636 |
+| 5 | extra-fine | 400 | 300 | 0.4292 | 0.02589 |
+| 9 | coarse | 141 | 106 | 0.8634 | 0.04037 |
+| 9 | medium | 200 | 150 | 0.8354 | 0.03555 |
+| 9 | fine | 283 | 212 | 0.7637 | 0.03322 |
+| 9 | extra-fine | 400 | 300 | 0.6606 | 0.03020 |
+
+Unlike the pre-fix mesh-independence study (fine->extra-fine changed
+Cl<1%), Cl is still changing 8-13% from fine to extra-fine on the corrected
+geometry (alpha=5: -9.3%, alpha=9: -13.5%). Reading: the old bug was
+undershooting the true leading-edge curvature, so the old mesh only had to
+resolve an artificially blunted shape; now that the LE is properly sharp,
+"fine" (283x212, the current production default) may no longer be enough
+to resolve it, especially at higher incidence where the LE suction peak
+matters more. **Not resolved as of this section** - production mesh
+settings may need to move up a tier, which is a comparable compute cost to
+redoing the full sweep again. Flagged for a decision before treating any
+NACA0012 dataset as final; not blocking the near-stall investigation below
+since that uses the existing "fine" tier consistent with all other rows.
+
+### 11.5 Near-stall breakdown re-investigation - new threshold is alpha>=14, NOT alpha>=8
+
+The corrected-geometry Cl-vs-alpha curve (full 29-angle resweep,
+`results/airfoil_results.csv`) is smooth and monotonic through alpha=12,
+unlike the old dataset which broke down by alpha=8. Cd starts escalating
+disproportionately from alpha=12 onward (0.0472 -> 0.0627 -> 0.1586 ->
+0.3028 at alpha=12/13/14/15) while Cl keeps climbing to physically
+implausible values (2.05-2.13 by alpha=17-19, well above any real NACA0012
+stall Cl at this Re) - the same qualitative signature as the old
+breakdown, just starting much later.
+
+Ran the extended-iteration diagnostic (3000 -> 6000 iterations) at
+alpha=9, 12, 13, 14 to locate the real onset rather than assume it moved
+by the same 6 degrees as a guess:
+
+- **alpha=9, 12: cleanly converged.** Cl approaches its 6000-iteration
+  value asymptotically (alpha=9: 0.764->0.772, +1.1%; alpha=12: 0.915->
+  0.927, +1.4%, with a small bounded overshoot/settle around
+  iteration 1000-2000, not a divergence). Reliable.
+- **alpha=13: converges, but slowly.** Cl overshoots to 1.042 by
+  iteration 1000, declines to a genuine plateau of ~0.898-0.902 by
+  iteration 4500-6000 (final 1500 iterations flat to 3 sig figs). The
+  standard 3000-iteration sweep value (Cl=0.936) is ~3.7% high relative to
+  its own converged value - a real but bounded iteration-count error, not
+  a sign of no steady solution. Treated as the last validated angle, with
+  this caveat noted rather than re-running the whole dataset at 6000
+  iterations.
+- **alpha=14: confirmed no steady solution.** Cl swings wildly and is
+  still moving by tens of percent at iteration 6000 - not plateaued:
+  0.955 (i=500) -> 1.138 (i=1000) -> 1.223 (i=3500) -> 1.305 (i=4000) ->
+  0.999 (i=5000) -> 0.587 (i=5500) -> **0.183 (i=6000, still falling)**.
+  Cd and Cm swing correspondingly (Cd peaks ~0.276 around i=4500 then
+  falls to 0.119; Cm swings from +0.033 to -0.156 and back to +0.018).
+  Same climb/crash/partial-recovery signature documented for the old
+  geometry's breakdown cases and for NACA2412 alpha=11/14 (section 10.6).
+
+alpha=15-20 were not independently extended-iteration-tested (same
+convention as prior sections - representative points characterize the
+regime), but share alpha=14's qualitative signature (Cl climbing past any
+physical bound, Cd escalating) and are flagged on that basis.
+
+**`auto_flag_airfoil()` did not catch any of this** - its heuristics
+(single-step Cl drop >0.5, Cd jump >3x previous, or climb-back-above-
+first-drop) were tuned to the *old* dataset's failure shape (a sharp Cl
+drop then partial recovery). The new dataset's failure shape is a smooth
+monotonic climb into unphysical territory with no single-step trigger
+large enough to fire any of the three criteria - every alpha>=14 row would
+have sailed through with an empty note if this extended-iteration check
+hadn't been run by hand. Worth hardening later (e.g. an implausible-Cl-
+magnitude or Cd-escalating-trend criterion) but not done here - flagged as
+a known gap, not fixed as part of this phase.
+
+### 11.6 Conclusion: NACA0012 validated range (corrected geometry)
+
+**Validated range: alpha = -4 to 13 deg** (13 carries the slow-convergence
+caveat from 11.5 above; -4 to 12 fully clean).
+
+**alpha >= 14 deg: flagged `no-steady-solution-unsteady-separation`** in
+`results/airfoil_results.csv`, same label as the old dataset's convention.
+Confirmed by direct extended-iteration evidence at alpha=14; alpha=15-20
+inferred from matching qualitative signature, not independently confirmed
+to the same standard.
+
+**Comparison to the old (buggy-geometry) conclusion:** the breakdown angle
+moved from alpha>=8 to alpha>=14, a 6-degree shift. The corrected,
+properly-sharp leading edge sustains a steady attached-flow RANS solution
+across a much wider incidence range than the old undershoot-blunted shape
+did. This is the clearest evidence so far that the geometry bug was not
+just a cosmetic/thickness-accuracy issue but was materially degrading the
+solver's ability to find a steady solution at moderate incidence.
