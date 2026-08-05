@@ -406,6 +406,68 @@ def _naca4_polyline_points(m: float, p: float, t: float,
     return "(" + " ".join(f"({px:.8f} {py:.8f} {z})" for px, py in pts) + ")"
 
 
+def _naca4_arc_length(m: float, p: float, t: float, x0: float, x1: float,
+                      surface: str, n_samples: int = 2000) -> float:
+    """Numerically integrate the arc length of the analytical NACA4 surface
+    between chord stations x0 and x1 (piecewise-linear over n_samples dense
+    points - n_samples is far denser than any mesh tier's cell count, so this
+    is effectively exact for grading-ratio purposes)."""
+    total = 0.0
+    prev = None
+    for i in range(n_samples + 1):
+        x = x0 + (x1 - x0) * i / n_samples
+        (xu, yu), (xl, yl) = _naca4_surface_point(x, m, p, t)
+        pt = (xu, yu) if surface == "upper" else (xl, yl)
+        if prev is not None:
+            total += math.hypot(pt[0] - prev[0], pt[1] - prev[1])
+        prev = pt
+    return total
+
+
+def _grading_first_cell(L: float, n: int, ratio: float) -> float:
+    """First cell size for n cells geometrically graded across length L with
+    expansion ratio (last-cell/first-cell) = ratio - the same convention
+    OpenFOAM's simpleGrading/edgeGrading uses."""
+    if n <= 1:
+        return L
+    if abs(ratio - 1.0) < 1e-12:
+        return L / n
+    k = ratio ** (1.0 / (n - 1))
+    return L * (k - 1) / (k**n - 1)
+
+
+def _grading_last_cell(L: float, n: int, ratio: float) -> float:
+    return _grading_first_cell(L, n, ratio) * ratio
+
+
+def _solve_grading_ratio_for_last_cell(L: float, n: int, target_last_cell: float) -> float:
+    """
+    Solve for the expansion ratio r such that n cells geometrically graded
+    across length L have a last-cell size equal to target_last_cell.
+    _grading_last_cell(L, n, r) is monotonically increasing in r, so this is
+    a safe bisection (in log-space, since r is a multiplicative ratio).
+    """
+    if n <= 1:
+        return 1.0
+    lo, hi = 1e-4, 1e4
+    flo = _grading_last_cell(L, n, lo) - target_last_cell
+    fhi = _grading_last_cell(L, n, hi) - target_last_cell
+    while flo > 0 and lo > 1e-12:
+        lo /= 10.0
+        flo = _grading_last_cell(L, n, lo) - target_last_cell
+    while fhi < 0 and hi < 1e12:
+        hi *= 10.0
+        fhi = _grading_last_cell(L, n, hi) - target_last_cell
+    for _ in range(100):
+        mid = math.sqrt(lo * hi)
+        fm = _grading_last_cell(L, n, mid) - target_last_cell
+        if fm > 0:
+            hi = mid
+        else:
+            lo = mid
+    return math.sqrt(lo * hi)
+
+
 def _build_block_mesh_cmesh(airfoil_patch: str, stl_name: str,
                             nx: int = 283, ny: int = 212) -> str:
     """
@@ -432,8 +494,6 @@ def _build_block_mesh_cmesh(airfoil_patch: str, stl_name: str,
     """
     R        = 20.0
     xS       = 0.3
-    yL       = -0.06
-    yU       =  0.06
     xMax     = 40.0
     xMin_prj = -20.0   # projects onto cylinder → (-19.7, 0)
 
@@ -448,19 +508,52 @@ def _build_block_mesh_cmesh(airfoil_patch: str, stl_name: str,
     xUG = 5.0
     xDG = 10.0
     wG  = 400
-    # Middle block (xS->TE) chordwise grading. Was a flat 1 (uniform), which
-    # left an abrupt ~15-25% cell-size jump at the xS seam versus the leading
-    # block's graded cells arriving from the LE (measured directly on a built
-    # NACA2412 mesh: ~0.0075-0.0084 approaching the seam vs. a flat 0.0066
-    # right after it). mG continues that taper instead of resetting to
-    # uniform - direction is TE-end->xS-end per the hex vertex ordering below,
-    # so mG>1 makes the xS-end cell bigger (matching the leading block) and
-    # the TE-end cell smaller.
-    mG  = 1.3
 
     naca = _naca4_params(airfoil_patch)
     if naca is not None:
         m, p, t = naca
+
+        # Seed y-values for the xS vertices (7/19 lower, 8/20 upper), computed
+        # from the true analytical surface instead of hardcoded +-0.06. Those
+        # constants happened to match NACA0012 almost exactly (yt(0.3)~0.060)
+        # which is why this never surfaced there, but for a cambered airfoil
+        # the true surface is well off +-0.06 (NACA2412: upper 0.0787, lower
+        # -0.0412) - far enough that blockMesh's single-vertex project did not
+        # reliably snap onto the true nearby curve, instead landing at
+        # (approximately) the raw unprojected seed. That planted a genuinely
+        # wrong point right at the seam, which no amount of grading-ratio
+        # tuning downstream (mG, above) could fix, since the vertex itself
+        # was in the wrong place.
+        (_, yU), (_, yL) = _naca4_surface_point(xS, m, p, t)
+
+        # Middle block (xS->TE) chordwise grading, solved analytically instead
+        # of a hardcoded constant. A flat simpleGrading(1,...) left an abrupt
+        # cell-size jump at the xS seam versus the leading block's graded
+        # cells arriving from the LE; a single hardcoded mG=1.3 (tuned by
+        # eye against one NACA2412 fine-tier mesh) turned out to only work by
+        # coincidence there - it left a 80-95% cell-size collapse at the seam
+        # on other tiers, and would drift for any other camber entirely,
+        # since it was never actually matching anything, just guessed.
+        #
+        # Fix: solve for the exact expansion ratio (per OpenFOAM's geometric
+        # simpleGrading convention) that makes the middle block's xS-adjacent
+        # cell equal the leading block's xS-adjacent cell, using each block's
+        # true analytical arc length - independently for upper and lower,
+        # since camber makes their arc lengths (and hence target cell sizes)
+        # genuinely different. mG>1 makes the xS-end cell bigger (matching
+        # the leading block) and the TE-end cell smaller, direction is
+        # TE-end->xS-end per the hex vertex ordering below.
+        L_lead_upper = _naca4_arc_length(m, p, t, 0.0, xS, "upper")
+        L_lead_lower = _naca4_arc_length(m, p, t, 0.0, xS, "lower")
+        L_mid_upper  = _naca4_arc_length(m, p, t, xS, 1.0, "upper")
+        L_mid_lower  = _naca4_arc_length(m, p, t, xS, 1.0, "lower")
+
+        s_seam_upper = _grading_first_cell(L_lead_upper, xUC, lG)
+        s_seam_lower = _grading_first_cell(L_lead_lower, xUC, lG)
+
+        mG_upper = _solve_grading_ratio_for_last_cell(L_mid_upper, xMC, s_seam_upper)
+        mG_lower = _solve_grading_ratio_for_last_cell(L_mid_lower, xMC, s_seam_lower)
+
         edges_block = f"""\
     polyLine  4  7 {_naca4_polyline_points(m, p, t, 0.0, xS, "lower", 0.1)}
     polyLine  7  5 {_naca4_polyline_points(m, p, t, xS, 1.0, "lower", 0.1)}
@@ -476,7 +569,14 @@ def _build_block_mesh_cmesh(airfoil_patch: str, stl_name: str,
     project 15 21 (inlet_arc)"""
     else:
         # Non-NACA custom airfoil identifier: keep the original project-based
-        # edges (no analytical formula available to sample from).
+        # edges (no analytical formula available to sample from). No
+        # analytical arc length or surface formula is available either, so
+        # neither the seam vertex height nor the middle block grading can be
+        # solved exactly - fall back to the old symmetric-airfoil-shaped
+        # guesses (uniform mG=1, +-0.06 seed) rather than pretending precision
+        # that isn't there for arbitrary geometry.
+        yU, yL = 0.06, -0.06
+        mG_upper = mG_lower = 1.0
         edges_block = f"""\
     project  4  7 ({airfoil_patch})
     project  7  5 ({airfoil_patch})
@@ -558,7 +658,7 @@ blocks
         1 1 1 1
         {wG} {wG} {wG} {wG}
     )
-    hex ( 5  7 19 17  1  0 12 13) ({xMC} 1 {nW}) simpleGrading ({mG} 1 {wG})
+    hex ( 5  7 19 17  1  0 12 13) ({xMC} 1 {nW}) simpleGrading ({mG_lower} 1 {wG})
     hex (17 18  6  5 13 14  2  1) ({xDC} 1 {nW}) simpleGrading ({xDG} 1 {wG})
     hex (20 16  4  8 21 15  3  9) ({xUC} 1 {nW})
     edgeGrading
@@ -567,7 +667,7 @@ blocks
         1 1 1 1
         {wG} {wG} {wG} {wG}
     )
-    hex (17 20  8  5 22 21  9 10) ({xMC} 1 {nW}) simpleGrading ({mG} 1 {wG})
+    hex (17 20  8  5 22 21  9 10) ({xMC} 1 {nW}) simpleGrading ({mG_upper} 1 {wG})
     hex ( 5  6 18 17 10 11 23 22) ({xDC} 1 {nW}) simpleGrading ({xDG} 1 {wG})
 );
 
