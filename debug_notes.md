@@ -1498,3 +1498,51 @@ alpha<=13 is already correct as-swept.
 - Camber delays breakdown by 2 deg (13->15 last-reliable) and raises CLmax
   (0.907 -> 1.071) - both physically expected, and a clean contrast to the
   old buggy-geometry data where both airfoils broke down at the same angle.
+
+### 12.7 Cp comparison re-run: geometry bug, NOT the turbulence model, drove
+### most of the section 10.4 suction-side discrepancy (2026-08-09)
+
+Re-ran the NACA2412 alpha=4 surface-Cp comparison against the NeuralFoil/
+XFOIL reference (Re=2e5), same methodology as section 10.4, now on the
+corrected geometry+mesh (6000-iter case naca2412_ap4_0). OpenFOAM wall Cp
+extracted by mapping the zeroGradient airfoil-patch faces to their owner
+cells (Cp = p_kinematic / (0.5 V^2); stagnation Cp came out 0.998, sign/
+reference confirmed). NeuralFoil Cp reconstructed from its ue/vinf edge-
+velocity output as 1 - (ue/vinf)^2. NeuralFoil CL=0.706 matches real XFOIL
+(0.708), reference validated.
+
+**Result (upper/suction surface, the section-10.4 hotspot):**
+
+| metric | section 10.4 (buggy geom) | now (corrected) |
+|--------|---------------------------|-----------------|
+| \|Cp err\| peak at x/c 0.10-0.25 | **~0.61** | **0.064** |
+| \|Cp err\| at suction peak (x/c~0.016) | (not isolated) | 0.146 |
+| upper-surface mean \|Cp err\| | (large) | 0.066 |
+| lower-surface mean \|Cp err\| | - | 0.030 |
+
+**The suction-side discrepancy collapsed ~10x (0.61 -> 0.064) in the same
+region.** Section 10.4 attributed that error to the fully-turbulent
+kOmegaSST boundary layer smearing the suction peak. That was wrong - the
+bulk of it was the geometry bug (section 11): a wrong airfoil shape produces
+a wholesale-wrong pressure distribution vs the correct-shape reference. With
+the geometry/mesh fixed, only a small, genuine turbulence-model effect
+remains: OpenFOAM still under-predicts the suction peak by ~0.05-0.15 Cp
+(largest right at the LE), consistent with a fully-turbulent BL mildly
+smearing the peak - but ~10x smaller than section 10.4 claimed. The
+pressure (lower) surface matches the reference to ~0.03 mean.
+
+**Revises section 10.4's headline caution.** 10.4 argued the pipeline's
+camber-vs-lift conclusions are a "probable underestimate" and "the real
+benefit of camber is likely larger than what this pipeline will report,"
+because it believed the turbulence model was under-resolving the (camber-
+driven) suction peak by up to 0.61. The true turbulence-model bias is ~10x
+smaller, so that caution is largely retracted: the camber conclusions are far
+more trustworthy than 10.4 feared. 10.4's *direction* still holds (fully-
+turbulent RANS does mildly under-predict the suction peak, and more camber =
+stronger peak = more smearing), but the *magnitude* it feared was almost
+entirely the geometry bug, not the physics model. The NACA4412 Cp check
+(stronger camber) is the remaining test of the residual, now-small effect.
+
+Plot: results/NACA2412_Cp_alpha4_corrected.png. Script: compare_naca2412_cp.py
+(committed - reconstructs the surface-Cp comparison capability, which the
+section-10.4-era version was an ephemeral scratch script and had been lost).
