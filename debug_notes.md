@@ -1546,3 +1546,93 @@ entirely the geometry bug, not the physics model. The NACA4412 Cp check
 Plot: results/NACA2412_Cp_alpha4_corrected.png. Script: compare_naca2412_cp.py
 (committed - reconstructs the surface-Cp comparison capability, which the
 section-10.4-era version was an ephemeral scratch script and had been lost).
+
+---
+
+## 13. XFOIL Cl/Cd validation and an HONEST correction to the
+## "consistent offset" claim (2026-08-10)
+
+Written before the NACA4412 result is in, deliberately - this is the record
+of where confidence actually stands, not a story told after the answer is
+known.
+
+### 13.1 The premature conclusion
+
+Ran the full Cl/Cd polar validation of the corrected-mesh, 6000-iter
+NACA0012 and NACA2412 sweeps against the XFOIL Re=2e5 Ncrit=9 references
+(compare_naca0012.py, compare_naca2412.py). Summary metrics over the
+reliable range:
+
+| airfoil | mean \|Cl err\| | mean \|Cd err\| |
+|---------|-----------------|-----------------|
+| NACA0012 | 0.134 | 0.011 |
+| NACA2412 | 0.153 | 0.015 |
+
+Cd agrees well (OpenFOAM slightly high, expected from the fully-turbulent
+BL). The Cl error is a systematic deficit - OpenFOAM sits below XFOIL - and
+on the strength of the two mean values being close (0.134 vs 0.153) I
+concluded the offset was "systematic and consistent across airfoils, so the
+relative camber comparison is trustworthy because the bias cancels."
+
+**That conclusion was premature.** It rested on mean \|Cl error\| alone and
+never checked the actual per-angle *shape* of the offset. Two means being in
+the same ballpark says nothing about whether the offset tracks together as a
+function of alpha.
+
+### 13.2 What the per-angle ΔCl(α) overlay actually shows
+
+Computed ΔCl(α) = Cl_XFOIL(α) - Cl_OpenFOAM(α) at every matching angle for
+both airfoils and overlaid them directly
+(results/deltaCl_overlay_0012_2412.png). The two curves do NOT overlay
+closely - the similar means are coincidental, averaging over compensating
+divergences:
+
+| alpha range | behavior | gap (2412 - 0012) |
+|-------------|----------|-------------------|
+| -4 to +1    | track closely (both rise from ~-0.13 through 0) | within +-0.05 |
+| 2 to 6      | NACA0012 deficit LARGER (0012 ~0.11-0.14, 2412 ~0.05) | up to -0.09 at a=3 |
+| 6.5 to 7    | NACA2412 steps up sharply (0.055 -> 0.22), crosses above | - |
+| 7 to 9      | NACA2412 deficit LARGER | up to +0.10 at a=7 |
+| 9.5 to 11.5 | reconverge, both ~0.18-0.21 | +-0.03 |
+| 12 to 13+   | NACA2412 diverges upward steeply (0.20->0.27->0.39) toward its own stall; 0012 turns down | growing, +0.10 at a=13 |
+
+**Largest divergence: +0.104 at alpha=7**, and it is not random - it
+coincides with the confirmed real alpha=6/7 NACA2412 Cl-dip feature
+(section 12.4: converged, reproducible). OpenFOAM captures a genuine flow
+event there that XFOIL does not show the same way, so the local deficit
+jumps. The other structured divergence is approaching each airfoil's own
+stall, where the two codes differ in stall onset.
+
+So the offset is a real alpha-AND-camber-dependent function, not a flat
+systematic bias. 0012's deficit dominates at low-moderate alpha; 2412's
+dominates at 7-9 and again near stall.
+
+### 13.3 Honest current confidence level
+
+- **Qualitative camber conclusion (higher CLmax and delayed stall with
+  camber): likely still directionally valid.** The offset is often smaller
+  than the camber-driven Cl differences, and the curves do track in the
+  -4..1 and 9.5..11.5 bands.
+- **Precise quantitative magnitudes (exact CLmax deltas, exact stall-angle
+  deltas between airfoils): NOT yet certified.** Some portion of a measured
+  camber-to-camber Cl difference could be turbulence-model artifact rather
+  than pure camber effect, because the offset itself varies with camber and
+  does not cleanly cancel.
+
+### 13.4 Pending resolution: the three-way overlay
+
+The deciding test is the same ΔCl(α) overlay extended to NACA4412 (4%
+camber), once its sweep and XFOIL validation are done:
+
+- If NACA4412's ΔCl(α) lands as an ORDERED third curve (monotonically spaced
+  relative to 0012 and 2412), the offset is a characterizable - if not flat -
+  camber-dependent correction, and quantitative camber claims can be made
+  with a stated correction/uncertainty.
+- If NACA4412 BREAKS the ordering (lands out of sequence), that is evidence
+  the offset is not reliably correctable, and the paper should either heavily
+  caveat precise quantitative claims or report the qualitative trend as the
+  finding instead of exact deltas.
+
+This is the actual evidence the relative-camber comparison should be
+certified (or rejected) on - not the fact that two mean-error numbers were in
+the same ballpark. Supporting plot: results/deltaCl_overlay_0012_2412.png.
