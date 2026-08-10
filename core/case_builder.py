@@ -393,6 +393,16 @@ def _naca4_polyline_points(m: float, p: float, t: float,
     was found to cut straight across the chord between the LE/xS/TE anchor
     vertices and then nearest-point-snap - undershooting the true convex
     surface by up to 95% of thickness near the LE (see debug_notes.md).
+
+    Points are ordered by the nominal chord parameter (monotonic ALONG the
+    surface), NOT by the Cartesian x-coordinate. For a cambered airfoil the
+    upper surface near the LE curves AHEAD of x=0 (xu < 0), because thickness
+    is applied perpendicular to the tilted camber line - so xu is non-monotonic
+    there. Sorting by xu scrambles the true along-surface order into a self-
+    crossing zigzag, which folds the leading-edge cells (negative volumes).
+    That is exactly what broke NACA4412 (4% camber, min xu ~ -0.00027) while
+    0%/2% camber stayed just under the threshold. Nominal-parameter order
+    traces the surface correctly for any camber.
     """
     pts = []
     for i in range(n_dense):
@@ -401,9 +411,10 @@ def _naca4_polyline_points(m: float, p: float, t: float,
         if not (x0 < x < x1):
             continue
         (xu, yu), (xl, yl) = _naca4_surface_point(x, m, p, t)
-        pts.append((xu, yu) if surface == "upper" else (xl, yl))
-    pts.sort(key=lambda pr: pr[0])
-    return "(" + " ".join(f"({px:.8f} {py:.8f} {z})" for px, py in pts) + ")"
+        pt = (xu, yu) if surface == "upper" else (xl, yl)
+        pts.append((x, pt))
+    pts.sort(key=lambda r: r[0])   # order by nominal chord parameter x
+    return "(" + " ".join(f"({pt[0]:.8f} {pt[1]:.8f} {z})" for _, pt in pts) + ")"
 
 
 def _naca4_arc_length(m: float, p: float, t: float, x0: float, x1: float,
