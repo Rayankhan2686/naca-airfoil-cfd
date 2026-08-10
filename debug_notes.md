@@ -1371,3 +1371,130 @@ across a much wider incidence range than the old undershoot-blunted shape
 did. This is the clearest evidence so far that the geometry bug was not
 just a cosmetic/thickness-accuracy issue but was materially degrading the
 solver's ability to find a steady solution at moderate incidence.
+
+---
+
+## 12. Mesh-seam analytical fix, 6000-iter reruns, and full near-stall
+## diagnostics for both airfoils (2026-08-09)
+
+### 12.1 Context: two more mesh-construction defects fixed before this
+
+Investigating why NACA2412's mesh-independence study (section 11-era) showed
+a non-monotonic +/-26% Cl spread across tiers even after ruling out under-
+convergence turned up two more hardcoded-constant bugs in
+`_build_block_mesh_cmesh()`, both camber-specific and both invisible on
+NACA0012 (symmetric) by coincidence:
+
+- **mG (middle-block xS->TE chordwise grading)** was a hardcoded 1.3, tuned
+  by eye against one NACA2412 fine-tier mesh. Measured directly (cell-size
+  jump ratio at the x/c=0.3 seam): fine for NACA0012 (~0.86-0.88, flat across
+  all 4 tiers) but an 80-95% cell-size collapse for NACA2412 (0.05 coarse ->
+  0.20 fine, worse at coarser resolution). Replaced with an analytically
+  solved per-surface ratio (geometric simpleGrading sequence) matching the
+  leading block's xS-adjacent cell to the middle block's, using each block's
+  true arc length - independently for upper/lower (mG_upper != mG_lower for
+  cambered airfoils).
+
+- **yU/yL (seed y for the xS vertices 7/8/19/20)** were hardcoded +-0.06,
+  which matches NACA0012's actual thickness at x=0.3 (yt(0.3)~0.060) almost
+  exactly - the reason it was invisible there. For NACA2412 the true surface
+  is (0.0787 upper, -0.0412 lower), ~31% off. blockMesh's single-vertex
+  project landed at essentially the raw unprojected seed (0.300000, 0.060000)
+  instead of the true curve, planting a wrong point right at the seam. Fixed
+  by computing yU/yL from the analytical surface at xS.
+
+After both fixes, seam jump ratio is ~1.0 for BOTH airfoils across all 4
+tiers (naca2412 upper went 0.2373 -> ~0.995). Audited every other
+project(x,y,z) vertex: LE/TE are exact by NACA4 construction; far-field-arc
+vertices are geometry-independent; vertices 9/10/21/22 ("snaps to
+upper surf"/"snaps to TE") were empirically confirmed to NOT project onto
+the airfoil at all - they stay at the far-field radius (y=20), which is the
+correct far-field boundary shape, so the "snaps to..." comments are stale/
+wrong but harmless. Commit 93922b9.
+
+### 12.2 6000-iteration reruns (both airfoils, full 29-angle sweep)
+
+Separately confirmed (section 11-era + NACA2412 mesh-independence work): the
+fixed 3000-iteration budget under-converges the denser meshes. Both airfoils'
+full sweeps were re-run at 6000 iterations on the corrected mesh (commit
+c7d4084). Both now show physically realistic stall - Cl peaks then declines,
+unlike the pre-fix data which climbed into unphysical territory. NACA2412
+holds attached flow ~2-3 deg longer than NACA0012 and has a higher CLmax:
+camber delaying stall and raising peak lift, the physically expected result,
+and a clean contrast to the old buggy-geometry data where both broke down at
+the SAME angle (which was flagged as suspicious at the time).
+
+### 12.3 Near-stall extended-iteration diagnostics (12000 iterations)
+
+Ran the standard extended-iteration check (double to 12000 iters, full
+Cl/Cd/Cm trajectory + per-iteration pressure residual, same standard used
+throughout) on the angles that matter for the research conclusions.
+
+**Breakdown / no-steady-solution (both confirmed by direct evidence):**
+- NACA0012 alpha=14: Cl swings violently the whole run (climbs to 1.24,
+  crashes through zero to -0.059, partially recovers), never plateaus (Cl
+  span in final quarter = 0.12), pressure residual spikes in sync with each
+  Cl swing and never settles below ~1e-4. No steady solution.
+- NACA2412 alpha=16: same signature (Cl through zero to -0.038, span in
+  final quarter = 0.37, residual spikes to ~4e-3 synced with swings). No
+  steady solution.
+
+**Last reliable point below breakdown (both converge to clean plateaus):**
+- NACA0012 alpha=13: settles to Cl=0.894 (final-6% span 0.0002, residual to
+  5.6e-6). Converged. ~1% above its 6000-iter sweep value (0.884).
+- NACA2412 alpha=15: settles to Cl=0.899 (final-6% span 0.001, residual to
+  2.7e-6). Converged - but see 12.5, its 6000-iter sweep value was badly
+  under-converged (0.830).
+
+### 12.4 The alpha=6/7 dip is a REAL, reproducible feature (not noise)
+
+NACA2412 showed a ~7% Cl drop from alpha=6 (0.812) to alpha=7 (0.755) with
+Cm swinging sharply toward zero (-0.043 -> -0.0075) at an otherwise
+unremarkable early angle - flagged during the sweep as worth checking rather
+than dismissing. Both re-ran at 12000 iters converged ROCK-SOLID:
+- alpha=6: Cl=0.81319, last-25% span = 0.00007, residual to 9.3e-7.
+- alpha=7: Cl=0.75460, last-25% span = 0.00000, residual to 1.4e-6.
+Both reproduce their 6000-iter sweep values to 4 decimal places. This is a
+genuine, converged, repeatable aerodynamic feature - likely a real
+separation/loading-distribution shift the RANS model captures at that
+incidence for the cambered section (the sharp Cm-toward-zero swing is
+consistent with a center-of-pressure shift from trailing-edge separation
+onset). Not a numerical artifact.
+
+### 12.5 The alpha=15 under-convergence is alpha=15-SPECIFIC, not broad
+
+NACA2412 alpha=15 read 0.830 in the 6000-iter sweep but converges to 0.899
+at 12000 iters (+8.3% gap) - far larger than NACA0012 alpha=13's 1% gap.
+To scope this before trusting CLmax, re-ran the whole near-peak region
+(alpha=11,12,13,14) at 12000 iters:
+
+| alpha | 6000-iter sweep Cl | 12000-iter converged Cl | gap |
+|-------|--------------------|-------------------------|-----|
+| 11    | 1.0424             | 1.0427                  | +0.03% |
+| 12    | 1.0707             | 1.0714                  | +0.06% |
+| 13    | 1.0457             | 1.0447                  | -0.10% |
+| 14    | 0.9951             | 0.9990                  | +0.4%  |
+| 15    | 0.830              | 0.899                   | +8.3%  |
+
+Every near-peak angle (11-14) matches its sweep value within 0.4% and
+converges cleanly. **The under-convergence is isolated to alpha=15.** Its
+trajectory overshoots to 1.33, dips to 0.77, then recovers to a plateau at
+0.90 - the 6000-iter sweep caught it mid-recovery. alpha=15 sits just past
+the peak in the early separation-growth region, where the larger separated
+zone settles more slowly than the attached/near-peak points; those don't
+have a big separated region so they converge fast.
+
+Only alpha=14 and alpha=15 sweep rows were patched to their converged values
+in results/airfoil_results.csv (alpha=15 carries a note). Everything
+alpha<=13 is already correct as-swept.
+
+### 12.6 Conclusion: validated ranges and CLmax (fully-corrected pipeline)
+
+- **NACA0012: validated alpha = -4 to 13 deg. Breakdown (no steady RANS
+  solution) at alpha >= 14 deg.** CLmax ~0.907 at alpha=12.
+- **NACA2412: validated alpha = -4 to 15 deg. Breakdown at alpha >= 16 deg.**
+  **CLmax = 1.071 at alpha=12** (confirmed unchanged - alpha=12 was already
+  well-converged at 6000 iters, gap 0.06%).
+- Camber delays breakdown by 2 deg (13->15 last-reliable) and raises CLmax
+  (0.907 -> 1.071) - both physically expected, and a clean contrast to the
+  old buggy-geometry data where both airfoils broke down at the same angle.
