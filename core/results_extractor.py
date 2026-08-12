@@ -89,21 +89,70 @@ def extract_results(case_dir: str, airfoil: str, alpha_deg: float) -> dict | Non
 # Auto-flagging
 # ---------------------------------------------------------------------------
 
+# Notes this function generates itself - re-derived from scratch each pass so a
+# stale/since-fixed auto-flag is cleared, not preserved. Any other note is manual.
+_AUTO_NOTES = {"post-stall-unreliable", "diverged-unreliable"}
+
+
+def _is_single_point_anomaly(row: dict, prev: dict | None, nxt: dict | None) -> bool:
+    """
+    True if *row* is a lone diverged/garbage point: coefficients that are both
+    a large spike relative to BOTH immediate neighbours AND beyond any
+    physically plausible converged value.
+
+    This guards the sequential post-stall detector below. A case can "converge"
+    (residuals fall to ~1e-4) onto a non-physical state - the turbulence field
+    goes unstable early, corrupts the solution, and the solver settles on a
+    garbage steady state with huge Cl/Cd - so there is no solver crash to catch
+    it (seen on NACA4412 alpha=0: Cl~1888, Cd~17.5). Left unquarantined, that
+    one point's huge Cd trips the "abrupt Cd jump" criterion and cascades a
+    false post-stall flag onto every downstream angle. Airfoil-agnostic: no
+    real converged case at this Re has |Cl|>3 or Cd>1.
+    """
+    CL_MAX_PHYS = 3.0    # |Cl| beyond this is non-physical at Re~2e5
+    CD_MAX_PHYS = 1.0    # Cd beyond this is non-physical (deep post-stall ~0.6)
+    SPIKE       = 5.0    # x the larger neighbour magnitude
+    cl, cd = abs(row["Cl"]), abs(row["Cd"])
+    # Absolute implausibility is necessary in every case - a large-but-real
+    # value on a smooth trend must never be quarantined.
+    if cl <= CL_MAX_PHYS and cd <= CD_MAX_PHYS:
+        return False
+    nbrs = [n for n in (prev, nxt) if n is not None]
+    if not nbrs:
+        return True  # endpoint already beyond physical bounds
+    nbr_cl = max(abs(n["Cl"]) for n in nbrs)
+    nbr_cd = max(abs(n["Cd"]) for n in nbrs)
+    return cl > SPIKE * max(nbr_cl, 1e-9) or cd > SPIKE * max(nbr_cd, 1e-9)
+
+
 def auto_flag_airfoil(rows: list[dict]) -> list[dict]:
     """
     Apply reliability flags to rows for a single airfoil sorted by alpha.
 
     Flags assigned:
-    - 'diverged-unreliable'   : Cd < 0
+    - 'diverged-unreliable'   : Cd < 0, or a single-point anomaly (garbage
+                                coefficients from a non-physically-converged
+                                case - see _is_single_point_anomaly)
     - 'post-stall-unreliable' : Cl drops then rises again (second RANS branch)
                                 OR abrupt Cd jump >3x previous clean point
                                 (indicates sudden full separation onset)
 
+    Single-point anomalies are quarantined BEFORE the post-stall detection so a
+    lone garbage point cannot cascade-corrupt every flag after it.
+
     Already-flagged rows keep their existing note unless a stronger flag applies.
     """
     sorted_rows = sorted(rows, key=lambda r: r["alpha"])
+    n = len(sorted_rows)
 
-    # --- Detect post-stall start alpha ---
+    # --- Pre-pass: quarantine single-point anomalies ---
+    anomaly = [False] * n
+    for i in range(n):
+        prev = sorted_rows[i - 1] if i > 0 else None
+        nxt  = sorted_rows[i + 1] if i < n - 1 else None
+        anomaly[i] = _is_single_point_anomaly(sorted_rows[i], prev, nxt)
+
+    # --- Detect post-stall start alpha (skipping quarantined points) ---
     peak_cl      = float("-inf")
     peak_alpha   = None
     drop_seen    = False
@@ -112,16 +161,25 @@ def auto_flag_airfoil(rows: list[dict]) -> list[dict]:
     prev_cl      = None
     prev_cd      = None
 
-    for row in sorted_rows:
+    for i, row in enumerate(sorted_rows):
+        if anomaly[i]:
+            continue   # quarantined - do not let it seed prev_cl/prev_cd or trip a criterion
         cl    = row["Cl"]
         cd    = row["Cd"]
         alpha = row["alpha"]
 
-        # Criterion A — rise after stall drop:
-        #   Cl climbs back above the first-drop level + 0.20.
-        #   Using first-drop Cl (not running min) avoids false-positives when
-        #   Cl spirals further down before recovering on a second RANS branch.
-        if drop_seen and drop_first is not None and cl > drop_first + 0.20:
+        # Criterion A — PARTIAL rise after stall drop:
+        #   Cl climbs back above the first-drop level + 0.20, but stays BELOW
+        #   the pre-drop peak. A genuine post-stall second branch only recovers
+        #   partially - it never climbs back past CLmax. A dip that recovers
+        #   ABOVE its pre-drop peak was a benign mid-range feature, not stall
+        #   (e.g. NACA4412 alpha=4->5 dip recovering past its old peak on the
+        #   way to a higher CLmax at alpha=11) - fall through and let the
+        #   peak-update branch reset it. Using first-drop Cl (not running min)
+        #   avoids false-positives when Cl spirals further down before
+        #   recovering on a second RANS branch.
+        if (drop_seen and drop_first is not None
+                and cl > drop_first + 0.20 and cl < peak_cl):
             post_stall_start = peak_alpha
             break
 
@@ -150,10 +208,15 @@ def auto_flag_airfoil(rows: list[dict]) -> list[dict]:
             prev_cd = cd
 
     # --- Assign notes ---
+    # Re-derive the flagger's OWN labels from scratch each pass: start from a
+    # clean slate for any note this function itself produces (_AUTO_NOTES), so a
+    # stale auto-flag from a previous pass - e.g. a since-fixed cascade - is
+    # cleared rather than preserved. Any other (manual/research) note is kept.
     result = []
-    for row in sorted_rows:
-        note = row.get("note", "")
-        if row["Cd"] < 0:
+    for i, row in enumerate(sorted_rows):
+        existing = row.get("note", "")
+        note = "" if existing in _AUTO_NOTES else existing
+        if anomaly[i] or row["Cd"] < 0:
             note = "diverged-unreliable"
         elif post_stall_start is not None and row["alpha"] >= post_stall_start:
             note = "post-stall-unreliable"
