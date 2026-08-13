@@ -1853,3 +1853,91 @@ Flagged nuances (call out in the report so they are not misread):
    a different amount past its own peak (0012 stalls more abruptly once it goes).
    The clean camber ordering of separation holds pre-stall (alpha<=12); near/past
    stall it is not expected to.
+
+
+## 16. Real-XFOIL NACA4412 validation + three-way overlay redo
+## (SUPERSEDES the NeuralFoil three-way result in section 14) (2026-08-13)
+
+Section 14's three-way certification used NeuralFoil (an XFOIL surrogate) as the
+reference for ALL THREE airfoils, because airfoiltools.com was unreachable at the
+time and no XFOIL binary was available. The stated caveat was that the 4412
+low-alpha region "could partly reflect the surrogate." This section redoes the
+4412 validation and the three-way overlay with REAL XFOIL and resolves that
+caveat.
+
+### 16.1 Getting real XFOIL to run (no sudo)
+- The 4412 polar reference is airfoiltools' precomputed real-XFOIL polar
+  `xf-naca4412-il-200000` (Re=200000, Ncrit=9), fetched to
+  results/xfoil_reference/naca4412_re2e5_ncrit9.csv - the same source and format
+  as the existing 0012/2412 references.
+- A Cp DISTRIBUTION needs a runnable XFOIL (airfoiltools only gives integrated
+  Cl/Cd/Cm). No sudo (can't apt-install), no X11 dev headers (can't build from
+  source), pip is externally-managed and cmake is absent. Workaround that DID
+  work: `apt-get download xfoil` + `dpkg-deb -x` to a local prefix
+  (~/xfoil_local) - a real XFOIL 6.99 binary, no sudo.
+- That Debian binary is compiled with gfortran FPE trapping, so it SIGFPE-crashes
+  on ANY viscous solve (confirmed: even NACA0012 alpha=4 crashes). Fix WITHOUT
+  recompiling: LD_PRELOAD a 3-line shim that stubs `_gfortran_set_fpe` (and
+  feenableexcept) to no-ops. That routine only toggles CPU FP-exception TRAPPING;
+  it performs no arithmetic, so disabling it leaves every value bit-identical to
+  a stock (non-trapping) XFOIL build - it just lets transient NaN/Inf during the
+  Newton iteration be tolerated and recovered instead of raising SIGFPE. Shim:
+  scratchpad/noftrap_full.c.
+- VALIDATION that this is legit: local XFOIL (with the shim) reproduces the
+  airfoiltools polars for all three airfoils to <0.01 Cl and <0.0004 Cd across
+  alpha 0..8 (e.g. 0012 alpha=4: local 0.5353 vs airfoiltools 0.5357). So the
+  shim does not perturb results, and the airfoiltools 4412 polar is trustworthy.
+
+### 16.2 New 4412 validation artifacts (0012/2412 NOT touched)
+- results/../OpenFOAM/results/NACA4412_vs_reference.png (+ .csv): 4-panel dashboard
+  (Cl-a, Cd-a, dCl bars, drag polar) in the exact style of the 0012/2412
+  dashboards, breakdown alpha>=16 flagged red (no-steady-solution). Script:
+  compare_naca4412.py. Reliable-range mean |Cl error| vs XFOIL = 0.19 (dominated
+  by the near-stall angles, as for 0012/2412).
+- results/NACA4412_Cp_alpha4.png: chordwise Cp at alpha=4, OpenFOAM vs REAL XFOIL
+  6.99 (local run), matching the 2412 Cp-plot style. Script:
+  compare_naca4412_cp.py. XFOIL upper suction peak Cp=-1.20 at x/c=0.11; OpenFOAM
+  under-predicts the peak (~-0.82), the same RANS-vs-XFOIL suction-peak gap seen
+  in the 2412 Cp plot (sections 10.4 / 12.7) - consistent, not anomalous.
+
+### 16.3 Three-way overlay redo (real XFOIL for all three) - REPLACES section 14 fig
+- dCl(alpha) = Cl_XFOIL - Cl_OpenFOAM at every reliable OpenFOAM alpha (same
+  sign convention as section 14). Reference = airfoiltools real-XFOIL polars for
+  all three. Script: scratchpad/three_way_overlay_xfoil.py. Outputs (replacing
+  the NeuralFoil versions, same filename): results/deltaCl_overlay_threeway.png
+  and its data results/deltaCl_overlay_threeway_data.csv; both copied into
+  results/report_figures/ (the report points to ONE current version). The old
+  NeuralFoil PNG is overwritten; its numbers are preserved here and in section 14
+  (git history retains the old figure).
+
+Real-XFOIL results vs the section-14 NeuralFoil numbers (in brackets):
+- Mean dCl rises with camber: 0012 +0.096, 2412 +0.124, 4412 +0.137
+  [NeuralFoil: 0.103 / 0.124 / 0.139] - essentially unchanged.
+- Per-angle ordering (0012<=2412<=4412) holds at only 8/22 common angles
+  [NeuralFoil: 6/22]. Still BROKEN ORDERING; curves cross repeatedly, structure
+  dominated by each airfoil's own dip (4412 at 4->5, 2412 at 6->7) and
+  stall-approach angle.
+
+### 16.4 The two questions the redo answers
+1. Does the alpha<4 NEGATIVE-offset region for 4412 hold under real XFOIL?
+   YES, unambiguously. All 8 points at alpha<4 have dCl<0 (real XFOIL Cl BELOW
+   OpenFOAM): alpha=-4..3 give -0.115, -0.092, -0.079, -0.082, -0.073, -0.049,
+   -0.046, -0.040 (still -0.026 at alpha=4). e.g. alpha=0: XFOIL 4412 Cl=0.494
+   vs OpenFOAM 0.567. So OpenFOAM OVER-predicts 4412 lift at low incidence
+   relative to XFOIL - a real effect, NOT a NeuralFoil artifact. Section 14's
+   caveat on this region is resolved/removed.
+2. Is the broken-ordering conclusion affected? NO. It stands and is if anything
+   firmer with the authoritative reference (8/22 ordered). The paper's rule is
+   unchanged: precise quantitative camber-deltas must NOT be claimed; the
+   qualitative camber trends (CLmax ordering, delayed breakdown, zero-lift shift)
+   remain robust since the offset correction only raises values while preserving
+   those orderings.
+
+Why the redo agrees so closely with section 14: NeuralFoil is an XFOIL surrogate
+and was already validated against real XFOIL for 0012/2412 in section 13, so
+swapping in real XFOIL mainly certifies the 4412 numbers that were previously the
+only unvalidated leg. The conclusions carry over; they now rest on real XFOIL.
+
+Note: the two-way overlay deltaCl_overlay_0012_2412.png (section 13, 0012 vs 2412)
+was left as-is - 0012/2412 were explicitly out of scope for this pass.
+
