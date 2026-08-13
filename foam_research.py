@@ -35,6 +35,9 @@ SCRIPTS_DIR           = Path(__file__).parent
 CASES_DIR             = SCRIPTS_DIR / "cases"
 STL_DIR               = SCRIPTS_DIR / "stl"
 RESULTS_CSV           = SCRIPTS_DIR / "results" / "airfoil_results.csv"
+SUMMARY_CSV           = SCRIPTS_DIR / "results" / "camber_study_summary.csv"
+SEPARATION_CSV        = SCRIPTS_DIR / "results" / "separation_vs_alpha.csv"
+SUMMARY_MD            = SCRIPTS_DIR / "results" / "camber_study_summary.md"
 CUSTOM_AIRFOILS_DIR   = Path.home() / "OpenFOAM" / "airfoils"
 MESH_STATS_DIR        = Path.home() / "OpenFOAM" / "results"
 RESEARCH_MESH_CONFIG  = SCRIPTS_DIR / "research_mesh_config.json"
@@ -68,6 +71,10 @@ _DISPLAY = {
 
 def _display(key: str) -> str:
     return _DISPLAY.get(key, key.upper())
+
+
+# Canonical airfoil order for the consolidated deliverables view
+_SUMMARY_AIRFOILS = ["naca0012", "naca2412", "naca4412"]
 
 
 # ===========================================================================
@@ -295,6 +302,175 @@ def task_view_results():
             for r in filtered
         ]
         ui.print_table(["airfoil", "alpha", "Cl", "Cd", "L/D", "Cm"], table_rows, col_width=14)
+
+
+# ---------------------------------------------------------------------------
+# Final deliverables summary  (read-only consolidated report view)
+# ---------------------------------------------------------------------------
+# Representative pre-stall angles for the separation-onset rows.
+_DELIVERABLE_SEP_ANGLES = (0, 4, 12)
+
+# One-line legend printed under any separation x/c table so "attached" is self-explanatory.
+_SEPARATION_LEGEND = (
+    '  ("attached" = no Cf_x sign change found before x/c=0.99 '
+    '— flow stays attached to ~trailing edge)'
+)
+
+
+def task_final_deliverables():
+    """Consolidated, read-only view of the final report deliverables.
+
+    Reads the already-written post-processing outputs — camber_study_summary.csv
+    (the per-airfoil aero numbers) and separation_vs_alpha.csv (Cf zero-crossing
+    x/c) — and prints one fixed-width table across the three airfoils. Nothing is
+    recomputed; every number is taken verbatim from those validated files. If a
+    file is missing or a field is absent, a clear note is shown instead."""
+    ui.section("Final Deliverables Summary")
+
+    if not SUMMARY_CSV.exists():
+        ui.warn(f"Summary file not found: {SUMMARY_CSV}")
+        ui.info("Generate it first by running the post-processing/compile step "
+                "that writes results/camber_study_summary.csv.")
+        return
+
+    try:
+        summ_rows = list(csv.DictReader(open(SUMMARY_CSV)))
+    except Exception as exc:
+        ui.error(f"Could not read {SUMMARY_CSV.name}: {exc}")
+        return
+
+    summ = {r.get("airfoil", "").strip(): r for r in summ_rows}
+    airfoils = [a for a in _SUMMARY_AIRFOILS if a in summ]
+    if not airfoils:
+        ui.warn(f"No recognised airfoil rows in {SUMMARY_CSV.name}.")
+        return
+    for a in (a for a in _SUMMARY_AIRFOILS if a not in summ):
+        ui.warn(f"{_display(a)} is missing from {SUMMARY_CSV.name} — column omitted.")
+
+    # ---- separation table (optional; rows degrade to a clear note if absent) --
+    sep: dict[tuple[str, int], tuple[str, str]] = {}
+    have_sep = SEPARATION_CSV.exists()
+    if have_sep:
+        try:
+            for r in csv.DictReader(open(SEPARATION_CSV)):
+                try:
+                    a_int = int(round(float(r["alpha"])))
+                except (KeyError, ValueError):
+                    continue
+                sep[(r.get("airfoil", "").strip(), a_int)] = (
+                    r.get("x_c_separation", "").strip(),
+                    r.get("status", "").strip(),
+                )
+        except Exception as exc:
+            ui.warn(f"Could not read {SEPARATION_CSV.name}: {exc}")
+            have_sep = False
+    else:
+        ui.warn(f"{SEPARATION_CSV.name} not found — separation rows show 'no data'.")
+
+    # ---- cell formatters (verbatim strings; no recomputation) -----------------
+    def cell(af, key, suffix=""):
+        v = summ[af].get(key)
+        if v is None:
+            return "N/A"                    # column absent in this CSV version
+        v = v.strip()
+        if v == "":
+            return "N/A"
+        if v.lower().startswith("not reached"):
+            return "not reached"
+        return v + suffix
+
+    def cl1_reached(af):
+        v = (summ[af].get("CD_at_CL1.0") or "").strip()
+        try:
+            float(v)
+            return True
+        except ValueError:
+            return False
+
+    def cl1_cell(af, key, suffix=""):
+        # CL=1.0 targets: 0012 never reaches CL=1.0, so show 'not reached'
+        # (never extrapolate) for both CD and Cm on that airfoil.
+        return cell(af, key, suffix) if cl1_reached(af) else "not reached"
+
+    def sep_cell(af, alpha):
+        if not have_sep:
+            return "no data"
+        rec = sep.get((af, alpha))
+        if rec is None:
+            return "no data"
+        xc, status = rec
+        if status == "attached" or xc in ("", "-"):
+            return "attached"
+        return xc
+
+    # ---- assemble rows (metrics down, airfoils across) ------------------------
+    rows = [
+        ["CL,max"]                  + [cell(a, "CLmax") for a in airfoils],
+        ["α(CL,max)"]               + [cell(a, "alpha_CLmax", "°") for a in airfoils],
+        ["α_stall (0.98·CL,max)"]   + [cell(a, "alpha_stall_0.98CLmax", "°") for a in airfoils],
+        ["  interp bracket"]        + [cell(a, "alpha_stall_bracket") for a in airfoils],
+        ["Breakdown α (no steady)"] + [cell(a, "breakdown_alpha", "°") for a in airfoils],
+        ["max L/D"]                 + [cell(a, "max_LD") for a in airfoils],
+        ["α(max L/D)"]              + [cell(a, "alpha_max_LD", "°") for a in airfoils],
+        ["CD @ CL=0.6"]             + [cell(a, "CD_at_CL0.6") for a in airfoils],
+        ["Cm @ CL=0.6"]             + [cell(a, "Cm_at_CL0.6") for a in airfoils],
+        ["CD @ CL=1.0"]             + [cl1_cell(a, "CD_at_CL1.0") for a in airfoils],
+        ["Cm @ CL=1.0"]             + [cl1_cell(a, "Cm_at_CL1.0") for a in airfoils],
+        ["Cm @ α_stall"]            + [cell(a, "Cm_c4_at_alpha_stall") for a in airfoils],
+    ]
+    for ang in _DELIVERABLE_SEP_ANGLES:
+        rows.append([f"Separation x/c @ α={ang}°"] + [sep_cell(a, ang) for a in airfoils])
+
+    # ---- fixed-width print (uncoloured cells → plain ljust alignment) ---------
+    label_hdr = "Metric"
+    label_w = max(len(label_hdr), max(len(r[0]) for r in rows)) + 2
+    col_w   = max(13,
+                  max(len(c) for r in rows for c in r[1:]) + 2,
+                  max(len(_display(a)) for a in airfoils) + 2)
+
+    header = label_hdr.ljust(label_w) + "".join(_display(a).ljust(col_w) for a in airfoils)
+    print()
+    print("  " + ui._c(ui._B + ui._C, header))
+    print("  " + "-" * (label_w + col_w * len(airfoils)))
+    for r in rows:
+        print("  " + r[0].ljust(label_w) + "".join(c.ljust(col_w) for c in r[1:]))
+    print(_SEPARATION_LEGEND)
+    print()
+
+    src = SUMMARY_CSV.name + ((", " + SEPARATION_CSV.name) if have_sep else "")
+    ui.info(f"Numbers read verbatim from: {src}  (in results/)")
+    ui.info(f"Full write-up: {SUMMARY_MD.name} and debug_notes.md §15")
+
+    # ---- optional drill-downs (same y/N pattern as the L/D-table option) ------
+    if have_sep and ui.ask_yes_no("Show full separation_vs_alpha table (all angles)?",
+                                  default=False):
+        try:
+            sep_all = list(csv.DictReader(open(SEPARATION_CSV)))
+        except Exception as exc:
+            ui.error(f"Could not read {SEPARATION_CSV.name}: {exc}")
+            sep_all = []
+        if sep_all:
+            table = [
+                [_display(r.get("airfoil", "").strip()),
+                 (r.get("alpha", "").strip() or "?") + "°",
+                 r.get("x_c_separation", "").strip() or "-",
+                 r.get("status", "").strip() or "-"]
+                for r in sep_all
+            ]
+            ui.print_table(["airfoil", "α", "x/c_sep", "status"], table, col_width=13)
+            print(_SEPARATION_LEGEND)
+        else:
+            ui.warn(f"No rows found in {SEPARATION_CSV.name}.")
+
+    if ui.ask_yes_no("Show full write-up (camber_study_summary.md)?", default=False):
+        if SUMMARY_MD.exists():
+            try:
+                print()
+                print(SUMMARY_MD.read_text())
+            except Exception as exc:
+                ui.error(f"Could not read {SUMMARY_MD.name}: {exc}")
+        else:
+            ui.warn(f"{SUMMARY_MD.name} not found in results/.")
 
 
 # ===========================================================================
@@ -678,6 +854,7 @@ def menu_foam_research():
         print("    5) Visualize in ParaView")
         print("    6) Mesh Settings  (cell counts for Research simulations)")
         print("    7) View Mesh Statistics by Airfoil and Angle")
+        print("    8) Final deliverables summary  (consolidated report table)")
         print("    0) Back")
 
         choice = input(f"  {ui._c(ui._C, 'Select')}: ").strip()
@@ -695,6 +872,8 @@ def menu_foam_research():
             task_mesh_settings()
         elif choice == "7":
             task_mesh_stats()
+        elif choice == "8":
+            task_final_deliverables()
         elif choice == "0":
             break
         else:
