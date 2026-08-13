@@ -1636,3 +1636,91 @@ camber), once its sweep and XFOIL validation are done:
 This is the actual evidence the relative-camber comparison should be
 certified (or rejected) on - not the fact that two mean-error numbers were in
 the same ballpark. Supporting plot: results/deltaCl_overlay_0012_2412.png.
+
+---
+
+## 14. NACA4412: full sweep, alpha=0 divergence fix, near-stall diagnostic,
+## and the three-way certification test (2026-08-13)
+
+### 14.1 alpha=0 divergence (see also commit 3a840f1)
+
+NACA4412 alpha=0 diverged to a NON-physical "converged" state - turbulence
+field unstable early (k bounded to ~10,845), garbage forces (Cl~1888) with
+misleadingly clean residuals (~1e-4), no solver crash. Diagnosed as a
+numerical/turbulence instability, NOT a setup degeneracy (BC/IC structurally
+identical to alpha=+-0.5; (V,0,0) is a valid axial vector; 0/k byte-identical).
+Fixed with conservative relaxation (U/p/k/omega 0.2/0.15/0.2/0.2): zero
+k-bounding, converged. 12000-iter final Cl=0.5672 (mild under-convergence at
+6000). CSV row carries a provenance note.
+
+Three flagger-robustness fixes in core/results_extractor.py so one bad point
+can't cascade-corrupt flags: (1) single-point-anomaly quarantine pre-pass,
+(2) stale-auto-note clearing, (3) Criterion A only fires when the post-drop
+recovery stays BELOW the pre-drop peak (a dip recovering to a higher CLmax is
+a benign feature, not stall). Verified no regression on NACA0012/2412.
+
+### 14.2 Near-stall diagnostic (12000 iters at alpha=4,5,16,17,18)
+
+- **alpha=4, 5: CONVERGED** (Cl=0.939, 0.744; last-25% span ~0; reproduce the
+  6000-iter sweep to 3-4 decimals). The **alpha=4->5 dip is REAL**, not
+  under-convergence - the NACA4412 analog of NACA2412's confirmed alpha=6/7
+  dip. Camber moves the feature EARLIER and makes it BIGGER: 0012 none, 2412
+  dips at 6/7, 4412 dips at 4/5 more strongly. The Criterion-A fix correctly
+  treats it as benign, not stall.
+- **alpha=16: oscillating onset** (span 0.027, not settled - sweep value 1.013
+  was a mid-swing snapshot).
+- **alpha=17, 18: no steady solution** (Cl span 0.116/0.131 in the last
+  quarter; pressure residual spikes to 2e-3 / 1.6e-2 synced with the swings -
+  the confirmed breakdown signature).
+
+**NACA4412 validated range: alpha = -4 to 15, breakdown at alpha >= 16**
+(flagged no-steady-solution-unsteady-separation). Breakdown ordering across
+the series: **0012 at 14, 2412 and 4412 both at 16** - camber delays breakdown,
+but 4412's extra camber does NOT push it past 2412's. (CLmax still orders
+cleanly: 0.907 < 1.071 < 1.156.)
+
+Because the Criterion-A fix stops the auto-flagger from firing on the benign
+alpha=4/5 dip, the flagger also no longer catches NACA4412's GRADUAL post-stall
+decline (no single >0.5 drop, no Cd<0) - so alpha>=16 was flagged MANUALLY from
+this diagnostic, same as the near-stall angles for the other two airfoils.
+
+### 14.3 Three-way ΔCl(α) certification: BROKEN ORDERING
+
+Extended the section-13 ΔCl(α) overlay to all three airfoils to test whether
+the turbulence-model offset scales cleanly with camber (section 13.4's
+pre-registered decision test). Reference is NeuralFoil for ALL three
+(consistent source - airfoiltools XFOIL for 4412 was unreachable; the
+NeuralFoil-based 0012-vs-2412 curves reproduce section-13's real-XFOIL
+conclusion, confirming NeuralFoil is a faithful stand-in). Plot:
+results/deltaCl_overlay_threeway.png.
+
+**Verdict: the offset does NOT order cleanly by camber - it lands in the
+BROKEN-ORDERING branch.** The mean offset does rise with camber (0012 0.103,
+2412 0.124, 4412 0.139), but the per-angle ordering 0012<=2412<=4412 holds at
+only 6 of 22 angles, and the curves cross repeatedly:
+- alpha=-4..4: NACA4412 is the LOWEST curve, going NEGATIVE (OpenFOAM
+  OVER-predicts 4412's lift vs reference) - more camber -> smaller deficit,
+  the reverse of the expected direction.
+- alpha=5..9: flips to the "expected" 0012<2412<4412, but only because each
+  airfoil's dip spikes its own curve at a different angle (4412 at 5, 2412 at 7).
+- alpha=10..12: all three bunch and cross.
+- alpha=13..15: 0012 turns down toward its earlier stall while 2412/4412 climb
+  together toward theirs.
+
+The structure is dominated by each airfoil's OWN dip angle and OWN
+stall-approach angle, not a smooth camber scaling.
+
+**Implication for the paper:** the turbulence-model offset is NOT a reliably
+correctable, camber-scaled quantity, so precise quantitative camber-deltas
+("4% camber adds exactly X to CLmax") must NOT be claimed. The QUALITATIVE
+camber trends ARE robust and reportable: CLmax orders cleanly
+(0.907 < 1.071 < 1.156), camber raises peak lift and shifts the zero-lift angle
+negative, and camber delays breakdown (14 -> 16). Correcting for the offset
+would only RAISE the true values while preserving these orderings, so the
+qualitative conclusions stand; the exact magnitudes do not.
+
+Caveat stated plainly: the alpha<4 reversal for 4412 uses NeuralFoil
+(validated against real XFOIL for 2412, not independently at 4% camber), so
+that specific sign-flip could partly reflect the surrogate - but the overall
+broken-ordering conclusion does not depend on that region (the crossings and
+dip-driven structure carry it).
