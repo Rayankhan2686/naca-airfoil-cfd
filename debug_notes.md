@@ -1724,3 +1724,132 @@ Caveat stated plainly: the alpha<4 reversal for 4412 uses NeuralFoil
 that specific sign-flip could partly reflect the surrogate - but the overall
 broken-ordering conclusion does not depend on that region (the crossings and
 dip-driven structure carry it).
+
+
+## 15. Post-processing close-out: definitions, methods, and traceability
+## (2026-08-13)
+
+Final study post-processing before the report. All quantities below are computed
+from the VALIDATED polar ONLY. "Validated" = every row in
+results/airfoil_results.csv whose `note` is NOT one of
+{post-stall-unreliable, diverged-unreliable, no-steady-solution-unsteady-separation}.
+Provenance notes are KEPT and treated as validated data (they mark corrected/
+re-run points, not bad points):
+- naca2412 alpha=15: "corrected: 12000-iter converged" (6000-iter sweep read 0.830).
+- naca4412 alpha=0: "conservative-relaxation 12000-iter converged" (default 6000-iter
+  run diverged to a non-physical state, Cl~1888).
+Validated ranges: 0012 alpha=-4..13, 2412 alpha=-4..15, 4412 alpha=-4..15.
+
+Scripts (in scratchpad, run via WSL): aero_postproc.py (parts 1-4),
+part5_extract.py (part 5), compile_summary.py (compiled outputs).
+
+### 15.1 alpha_stall (distinct from "breakdown angle")
+Definition requested: the first angle at which CL drops by more than 2% from
+CL,max, i.e. the first alpha > alpha(CLmax) where CL < 0.98*CL,max. CL,max is the
+max CL over the validated polar (argmax). If the 0.98*CL,max crossing lands
+between two sampled angles, alpha_stall is LINEARLY INTERPOLATED between them and
+the bracketing sampled pair is reported. Results (all bracketed by sampled [12,13]):
+0012 = 12.81, 2412 = 12.86, 4412 = 12.28.
+
+This is a SEPARATE quantity from the "breakdown angle" (the angle at which the
+steady RANS solution ceases to exist / points get flagged
+no-steady-solution-unsteady-separation or post-stall-unreliable). Breakdown =
+first flagged/excluded angle above alpha(CLmax): 0012 = 14, 2412 = 16, 4412 = 16.
+Both are reported in the summary table. alpha_stall (~12.3-12.9) sits below
+breakdown (14-16) for every airfoil, as expected (the 2%-lift-loss onset precedes
+full loss of a steady solution).
+
+### 15.2 CD and Cm at target CL (0.6 and 1.0)
+CD, Cm, and alpha are interpolated at CL=0.6 and CL=1.0 by LINEAR interpolation
+along the ASCENDING (pre-CL,max) branch of the polar only (slice 0..argmax(CL),
+so the CL->quantity map is monotonic/single-valued). If a target CL lies outside
+the ascending-branch CL range it is reported "not reached" and NOT extrapolated.
+NACA0012 (CL,max=0.907) never reaches CL=1.0 -> reported "not reached". Cm here is
+Cm about the quarter chord (forceCoeffs CofR = (0.25 0 0)), i.e. Cm,c/4. L/D at
+target = CL_target / CD_interp.
+
+### 15.3 max L/D
+max over the validated polar of CL/CD, with the alpha at which it occurs:
+0012 = 23.00 @ 9.0 deg, 2412 = 26.25 @ 8.5 deg, 4412 = 27.93 @ 4.0 deg. See the
+NACA4412 caveat in 15.6.
+
+### 15.4 Cm,c/4 at alpha_stall
+Cm interpolated (np.interp over the full validated alpha,Cm arrays) at the
+interpolated alpha_stall: 0012 = 0.0467, 2412 = 0.0110, 4412 = -0.0274. Cm at
+CL=0.6 and CL=1.0 are in 15.2 / summary table 2.
+
+### 15.5 Skin friction Cf and separation point vs alpha
+Angles: representative set alpha = 0,4,8,10,11,12,13 per airfoil (pre-stall
+through alpha_stall). Case mapping matches the validated CSV value: base
+6000-iter case naca<af>_ap<N>_0, EXCEPT naca4412 alpha=0 -> naca4412_ap0_0_crelax
+(the base 6000-iter run is the non-physical one; crelax @ t=12000 is the
+validated solution).
+
+Method:
+- wallShearStress computed on the existing converged fields with
+  `simpleFoam -postProcess -func wallShearStress -latestTime` (the plain
+  `postProcess` utility FAILS with "Unable to find turbulence model in the
+  database" - the solver's -postProcess mode is required so the kOmegaSST model
+  is constructed to give nuEff).
+- The airfoil wall patch is named after the airfoil (naca0012/naca2412/naca4412),
+  nFaces=354. Wall-shear vectors are read from the patch boundaryField
+  (nonuniform List<vector>, 354 entries) in patch-face order; face centres are
+  computed from constant/polyMesh (points + faces, mean of each face's vertices).
+- Cf_x = tau_x / (0.5 * V^2), V = 2.4751 m/s. wallShearStress is kinematic for the
+  incompressible solver (already divided by rho), consistent with the kinematic
+  pressure used for Cp, so no rho factor is applied.
+- Upper surface = faces with y > camber-line y_c(x) (for the symmetric 0012,
+  y_c=0 so upper = y>0). Faces sorted LE->TE by x.
+- SIGN CONVENTION (determined empirically, not assumed): on the upper surface
+  ATTACHED flow gives Cf_x < 0 and REVERSED/separated flow gives Cf_x > 0.
+  Verified on alpha=4 (Cf_x<0 everywhere aft of the LE = attached) vs alpha=13
+  (Cf_x flips to >0 at x/c~0.40 and stays positive to ~0.98 = large TE
+  separation).
+- Separation onset x/c = the first SUSTAINED negative->positive zero-crossing,
+  searched in x/c in [0.05, 0.99] (front 5% excluded to avoid LE-stagnation sign
+  complexity; last 1% excluded to avoid TE-closure numerical noise). "Sustained"
+  = the region downstream of the candidate crossing is >=50% positive, which
+  rejects isolated single-face blips. Crossing x/c is linearly interpolated. If no
+  sustained crossing exists, the surface is reported "attached".
+
+Outputs: results/separation_vs_alpha.csv (airfoil, alpha, x_c_separation,
+status) and results/cf_profiles_<af>.csv (full upper-surface Cf_x(x/c) per angle,
+raw traceable data).
+
+### 15.6 Cross-checks against the established trends (consistency audit)
+Everything is consistent with the previously established results; the two items
+worth flagging are nuances of definition, NOT contradictions:
+
+Consistent:
+- CL,max orders cleanly with camber: 0.907 < 1.071 < 1.156 (matches section 14).
+- Breakdown 14/16/16 (matches sections 9-14).
+- max L/D rises monotonically with camber: 23.00 < 26.25 < 27.93.
+- Cm,c/4 at fixed CL becomes more nose-down with camber (CL=0.6:
+  +0.012 / -0.057 / -0.129); 0012 ~0 as expected for a symmetric section.
+- Separation moves forward monotonically with alpha on all three airfoils, and at
+  any fixed pre-stall alpha it moves forward with camber (x/c_sep orders
+  0012 > 2412 > 4412). This is the same physics as the cambered dip / earlier
+  stall-onset seen earlier: heavier upper-surface loading -> stronger adverse
+  gradient -> earlier separation. The crelax 4412 alpha=0 gives an attached,
+  physical Cf (-0.0152, matching 0012/2412 at alpha=0) - an independent
+  confirmation that the alpha=0 correction is sound.
+
+Flagged nuances (call out in the report so they are not misread):
+1. alpha_stall (2%-drop def) is NOT monotonic with camber: 12.81 / 12.86 / 12.28.
+   NACA4412 has the EARLIEST alpha_stall despite the highest CL,max, because its
+   CL,max peaks earliest (alpha=11 vs 12 for the others) and it then declines
+   gradually, so it crosses the 0.98*CL,max threshold at a slightly lower alpha.
+   This is an artifact of the metric's sensitivity to peak location + post-peak
+   slope, not a real "stalls first" ordering - the breakdown angle (16) is the
+   same as 2412 and later than 0012.
+2. NACA4412 max L/D occurs at alpha=4.0, far below 0012/2412 (~9/8.5). This is
+   because alpha=4 sits right at the top of the alpha=4->5 dip (the real,
+   12000-iter-confirmed feature from section 14). 4412's L/D has TWO nearly-tied
+   local maxima - alpha=4 (27.93) and alpha~8 (~27.6) - separated by the dip
+   valley; the global max just happens to be the pre-dip one. Report the number
+   but note it is dip-influenced and essentially tied with the alpha~8 peak.
+3. At alpha=13 the separation-x/c camber ordering scrambles (0012=0.404,
+   4412=0.451, 2412=0.484) because 13 deg is post-CL,max for all three but each is
+   a different amount past its own peak (0012 stalls more abruptly once it goes).
+   The clean camber ordering of separation holds pre-stall (alpha<=12); near/past
+   stall it is not expected to.

@@ -1,0 +1,4 @@
+airfoil,camber,validated_alpha_min,validated_alpha_max,n_validated,CLmax,alpha_CLmax,alpha_stall_0.98CLmax,alpha_stall_bracket,breakdown_alpha,max_LD,alpha_max_LD,CL_at_max_LD,CD_at_max_LD,CD_at_CL0.6,alpha_at_CL0.6,Cm_at_CL0.6,LD_at_CL0.6,CD_at_CL1.0,alpha_at_CL1.0,Cm_at_CL1.0,LD_at_CL1.0,Cm_c4_at_alpha_stall
+naca0012,0%,-4,13,22,0.9066,12.0,12.81,"[12,13]",14,23.00,9.0,0.7879,0.03426,0.02944,6.23,0.0117,20.38,not reached (CLmax<1.0),,,,0.0467
+naca2412,2%,-4,15,24,1.0707,12.0,12.86,"[12,13]",16,26.25,8.5,0.8601,0.03277,0.02841,3.36,-0.0570,21.12,0.03981,10.30,0.0006,25.12,0.0110
+naca4412,4%,-4,15,24,1.1563,11.0,12.28,"[12,13]",16,27.93,4.0,0.9382,0.03359,0.02947,0.40,-0.1288,20.36,0.03620,7.98,-0.0488,27.63,-0.0274
